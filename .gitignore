@@ -7,6 +7,9 @@ __pycache__/
 *.pyc
 .venv
 
+# Memory storage (contains personal conversation data)
+data/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

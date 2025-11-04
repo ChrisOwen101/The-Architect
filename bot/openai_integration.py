@@ -8,7 +8,13 @@ if TYPE_CHECKING:
     from nio import AsyncClient, RoomMessageText
     from .config import BotConfig
 
+from .memory_store import MemoryStore
+from .memory_extraction import inject_memories_into_context, extract_memories_from_conversation
+
 logger = logging.getLogger(__name__)
+
+# Initialize global memory store
+_memory_store = MemoryStore(data_dir="data")
 
 # OpenAI API configuration
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
@@ -307,6 +313,15 @@ async def generate_ai_reply(
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT}] + conversation
 
+        # Inject relevant memories into context (last 30 days)
+        messages = await inject_memories_into_context(
+            messages=messages,
+            user_id=event.sender,
+            room_id=room.room_id,
+            memory_store=_memory_store,
+            days=30
+        )
+
         # Generate function schemas from command registry
         registry = get_registry()
         function_schemas = registry.generate_function_schemas()
@@ -396,6 +411,18 @@ async def generate_ai_reply(
             if content:
                 logger.info(
                     f"Generated final AI reply ({len(content)} chars, {iteration} iteration(s))")
+
+                # Extract memories from conversation (background task, don't block response)
+                asyncio.create_task(
+                    extract_memories_from_conversation(
+                        messages=messages,
+                        user_id=event.sender,
+                        room_id=room.room_id,
+                        api_key=config.openai_api_key,
+                        memory_store=_memory_store
+                    )
+                )
+
                 return content.strip()
             else:
                 logger.warning("Response has no content and no tool_calls")

@@ -116,6 +116,52 @@ pytest tests/test_handlers.py -v
 - Uses GPT-5 model with "The Architect" Matrix-themed system prompt
 - Retry logic: Two attempts with 2-second delay between failures
 - Returns user-friendly error messages on API failures
+- **Memory Integration**: Automatically injects relevant memories into conversation context and extracts new memories after replies
+
+**bot/memory_store.py** - Persistent memory storage system
+- `MemoryEntry`: Dataclass representing a single memory with id, timestamp, content, tags, and access tracking
+- `MemoryStore`: Manages memory storage using markdown files with YAML frontmatter
+- `add_memory()`: Stores new memories with automatic timestamp and UUID generation
+- `get_recent_memories()`: Retrieves memories from a time window (default: 30 days) sorted by importance
+- `search_memories()`: Search memories by keyword, date range, and tags with limit support
+- `delete_memory()`: Removes specific memory by ID with ownership verification
+- `get_stats()`: Returns statistics including count, age range, access patterns, and importance scores
+- `calculate_importance()`: Scores memories based on recency (age-based decay) and access frequency
+- Storage format: Markdown files in `data/memories/users/{user_id}.md` and `data/memories/rooms/{room_id}.md`
+- Hybrid scope: Per-user memories (private) and per-room memories (shared within room)
+
+**bot/memory_extraction.py** - Automatic memory extraction and injection
+- `extract_memories_from_conversation()`: Uses OpenAI to analyze conversations and extract important facts
+  - Runs as background task after AI replies (fire-and-forget, doesn't block responses)
+  - Analyzes last 10 messages for facts about preferences, projects, dates, and personal information
+  - Returns structured JSON with content, context, and tags
+  - Stores extracted memories automatically via `MemoryStore`
+- `inject_memories_into_context()`: Retrieves recent memories and adds them to conversation context
+  - Fetches memories from last 30 days for both user and room scopes
+  - Injects as system message after main prompt but before conversation history
+  - Provides AI with awareness of past interactions for personalized responses
+  - Gracefully handles errors by returning original context if injection fails
+- Extraction prompt: Specialized system prompt that identifies preferences, projects, events, and personal details
+- Memory context format: Markdown with separate sections for user-specific and room-wide memories
+
+**bot/commands/recall.py** - Search and retrieve memories
+- Command for users to explicitly search their stored memories
+- Parameters: `query` (optional text search), `days` (time window, default 30), `limit` (max results, default 10)
+- Displays memories with timestamps, content, context, tags, importance scores, and memory IDs
+- Supports keyword search across content, context, and tags
+- Access count increments on retrieval for importance scoring
+
+**bot/commands/forget.py** - Delete specific memories
+- Command for users to remove unwanted memories by ID
+- Parameter: `memory_id` (UUID from recall command output)
+- Ownership verification: Users can only delete their own memories
+- Returns confirmation or error message
+
+**bot/commands/memory_stats.py** - Display memory statistics
+- Parameterless command showing overview of stored memories
+- Statistics: total count, oldest/newest memories, most accessed memory, average importance
+- Includes usage hints for recall and forget commands
+- Handles empty state gracefully
 
 ### Key Architectural Decisions
 
@@ -140,6 +186,8 @@ pytest tests/test_handlers.py -v
 10. **Thread-based replies**: Bot replies are sent as threaded messages using Matrix's `m.thread` relation type. The bot intelligently detects if an incoming message is already part of a thread and replies to the same thread root, keeping entire conversations organized together. The `m.in_reply_to` fallback is included for clients that don't support threads.
 
 11. **OpenAI function calling integration**: The bot automatically generates OpenAI function schemas from command parameter definitions. This enables natural language command invocation without manual pattern matching. The bot fetches full thread context (up to 50 messages) to maintain conversation continuity.
+
+12. **Automatic memory system**: The bot automatically extracts and remembers important information from conversations using OpenAI analysis. Memories are stored in markdown files with YAML frontmatter, organized per-user and per-room. The system uses importance scoring (recency + access frequency) to prioritize relevant memories. Memory injection happens before each AI call (last 30 days), and extraction happens after responses as a background task (fire-and-forget). Users can search (`recall`), delete (`forget`), and view statistics (`memory_stats`) for their memories. Storage location: `data/memories/` (excluded from git for privacy).
 
 ## Development Patterns
 
@@ -186,6 +234,38 @@ async def mycommand_handler(matrix_context: Optional[dict] = None) -> Optional[s
 ```
 
 Add tests in `tests/commands/test_mycommand.py`. Commands are hot reloaded automatically when added/removed, or you can manually trigger a reload by restarting the bot.
+
+### Using Memory Commands
+
+The bot automatically extracts and stores important information from conversations. Users can interact with their memories using these commands:
+
+**View memory statistics:**
+```
+@architect memory_stats
+```
+Shows total count, oldest/newest memories, most accessed memory, and average importance score.
+
+**Search memories:**
+```
+@architect recall                           # Show recent memories (last 30 days)
+@architect recall query="Python"             # Search for specific keywords
+@architect recall days=7                     # Memories from last week
+@architect recall query="project" limit=5    # Search with custom limit
+```
+Returns memories with timestamps, content, context, tags, importance scores, and IDs.
+
+**Delete specific memory:**
+```
+@architect forget memory_id="abc-123-def"
+```
+Deletes the memory with the specified ID (from `recall` output). Users can only delete their own memories.
+
+**Memory system behavior:**
+- **Automatic extraction**: After each conversation, the bot analyzes the last 10 messages and extracts important facts (runs as background task, doesn't block responses)
+- **Automatic injection**: Before generating replies, the bot retrieves relevant memories from the last 30 days and includes them in the conversation context
+- **Importance scoring**: Memories are ranked by `importance = (1.0 / (days_old + 1)) * log(access_count + 1)`, combining recency and access frequency
+- **Privacy**: User memories are stored separately per user and per room (`data/memories/users/` and `data/memories/rooms/`)
+- **Storage format**: Markdown files with YAML frontmatter (human-readable, version-control friendly)
 
 ### Testing Patterns
 - Use pytest with pytest-asyncio for async tests
@@ -249,3 +329,19 @@ Add tests in `tests/commands/test_mycommand.py`. Commands are hot reloaded autom
 16. **Self-message filtering**: The bot filters out its own messages to prevent infinite loops. This is critical for the AI response feature, as the bot would otherwise respond to its own AI-generated messages.
 
 17. **Parameter types**: Handler function signatures must match the params defined in @command decorator. The params define (name, type, description, required), and the handler must accept those parameters with matching names and types.
+
+18. **Memory extraction timing**: Memory extraction runs as a background task after AI replies using `asyncio.create_task()`. This is fire-and-forget - extraction errors don't affect user responses. Check logs for extraction failures.
+
+19. **Memory storage location**: Memories are stored in `data/memories/` which is excluded from git (see `.gitignore`). This directory is created automatically on first memory storage. Backup this directory separately if you want to preserve conversation memories.
+
+20. **Memory extraction costs**: Each conversation triggers an additional OpenAI API call for memory extraction (analyzing last 10 messages). This doubles OpenAI API usage. Monitor costs accordingly.
+
+21. **Memory injection context window**: The bot injects all memories from the last 30 days into every conversation. For users with many memories, this may consume significant tokens. The 30-day window is hardcoded in `bot/openai_integration.py:322` - adjust if needed.
+
+22. **Memory file format**: Memories use markdown with YAML frontmatter. Manual editing is possible but be careful with YAML syntax (especially timestamps and UUIDs). The parser is strict and will skip invalid entries.
+
+23. **Room vs user memories**: Currently only user-specific memories are actively used (scope="user"). Room-wide memories (scope="room") are supported in the storage layer but not automatically extracted. You can add room memory extraction by modifying `bot/memory_extraction.py`.
+
+24. **Memory deletion ownership**: Users can only delete their own memories. The `delete_memory()` function checks that `user_id` matches. This prevents cross-user memory deletion but doesn't prevent users from deleting memories in shared rooms.
+
+25. **Dependencies for memory system**: The memory system requires `aiofiles` (async file I/O) and `PyYAML` (YAML parsing). These are in `requirements.txt`. Missing dependencies will cause import errors on bot startup.
