@@ -72,16 +72,26 @@ class CommandRegistry:
                 try:
                     logger.debug(f"Executing command: {cmd.name}")
 
-                    # Check if handler accepts matrix_context parameter
+                    # Inspect handler signature
                     sig = inspect.signature(cmd.handler)
                     params = sig.parameters
 
-                    if 'matrix_context' in params and matrix_context:
-                        # Handler accepts Matrix context, pass it
-                        return await cmd.handler(body_stripped, matrix_context=matrix_context)
+                    # Check if handler has 'body' parameter (old-style)
+                    has_body_param = 'body' in params
+                    has_context_param = 'matrix_context' in params
+
+                    if has_body_param:
+                        # Old-style handler with body parameter
+                        if has_context_param and matrix_context:
+                            return await cmd.handler(body_stripped, matrix_context=matrix_context)
+                        else:
+                            return await cmd.handler(body_stripped)
                     else:
-                        # Handler doesn't accept Matrix context, call normally
-                        return await cmd.handler(body_stripped)
+                        # New-style handler without body parameter (structured params)
+                        if has_context_param and matrix_context:
+                            return await cmd.handler(matrix_context=matrix_context)
+                        else:
+                            return await cmd.handler()
                 except Exception:
                     logger.exception(f"Error executing command {cmd.name}")
                     return f"Error executing command '{cmd.name}'. Check logs for details."
@@ -100,6 +110,95 @@ class CommandRegistry:
         """Clear all registered commands."""
         self._commands.clear()
         self._patterns.clear()
+
+    def generate_function_schemas(self) -> list[dict[str, Any]]:
+        """
+        Generate OpenAI function calling schemas from registered commands.
+
+        Uses handler signatures and docstrings to generate schemas.
+
+        Returns:
+            List of function schema dicts in OpenAI format
+        """
+
+        schemas = []
+
+        for name, cmd in self._commands.items():
+            # Inspect handler signature to extract parameters
+            sig = inspect.signature(cmd.handler)
+            parameters_schema = {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+
+            for param_name, param in sig.parameters.items():
+                # Skip 'body', 'matrix_context' - these are internal
+                if param_name in ('body', 'matrix_context'):
+                    continue
+
+                # Extract type from annotation
+                param_type = "string"  # Default
+                if param.annotation != inspect.Parameter.empty:
+                    if param.annotation == str:
+                        param_type = "string"
+                    elif param.annotation == int:
+                        param_type = "integer"
+                    elif param.annotation == float:
+                        param_type = "number"
+                    elif param.annotation == bool:
+                        param_type = "boolean"
+                    elif hasattr(param.annotation, '__origin__'):
+                        # Handle Optional, List, etc.
+                        origin = param.annotation.__origin__
+                        if origin is list:
+                            param_type = "array"
+                        elif origin is dict:
+                            param_type = "object"
+
+                # Add parameter to schema
+                parameters_schema["properties"][param_name] = {
+                    "type": param_type,
+                    "description": f"Parameter {param_name}"
+                }
+
+                # Mark as required if no default value
+                if param.default == inspect.Parameter.empty:
+                    parameters_schema["required"].append(param_name)
+
+            # Parse docstring for better descriptions if available
+            docstring = inspect.getdoc(cmd.handler)
+            param_descriptions = {}
+            if docstring:
+                # Simple docstring parsing - look for "param_name: description" patterns
+                for line in docstring.split('\n'):
+                    line = line.strip()
+                    if ':' in line and not line.startswith((':param', 'Args:', 'Returns:')):
+                        parts = line.split(':', 1)
+                        if len(parts) == 2:
+                            param_descriptions[parts[0].strip()
+                                               ] = parts[1].strip()
+
+            # Update parameter descriptions from docstring
+            for param_name in parameters_schema["properties"]:
+                if param_name in param_descriptions:
+                    parameters_schema["properties"][param_name]["description"] = param_descriptions[param_name]
+
+            # Build function schema
+            function_schema = {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": cmd.description,
+                    "parameters": parameters_schema
+                }
+            }
+
+            schemas.append(function_schema)
+            logger.debug(f"Generated function schema for command: {name}")
+
+        logger.info(f"Generated {len(schemas)} function schema(s)")
+        return schemas
 
 
 # Global registry instance

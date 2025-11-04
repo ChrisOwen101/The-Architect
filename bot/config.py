@@ -43,6 +43,14 @@ class BotConfig:
                 "ANTHROPIC_API_KEY not set in environment or .env file")
         return key
 
+    @property
+    def openai_api_key(self) -> str:
+        key = os.getenv("OPENAI_API_KEY")
+        if not key:
+            raise RuntimeError(
+                "OPENAI_API_KEY not set in environment or .env file")
+        return key
+
 
 def load_config(path: str = CONFIG_FILE) -> BotConfig:
     load_dotenv()

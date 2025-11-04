@@ -6,9 +6,14 @@ from . import command
 
 @command(
     name="ping",
-    description="Responds with 'pong'",
+    description="Check if the bot is online and responsive",
     pattern=r"^!ping$"
 )
-async def ping_handler(body: str) -> Optional[str]:
-    """Simple ping command."""
+async def ping_handler() -> Optional[str]:
+    """
+    Check if the bot is online and responsive.
+
+    This is a simple health check command that requires no parameters.
+    Returns 'pong' if the bot is operational.
+    """
     return "pong"

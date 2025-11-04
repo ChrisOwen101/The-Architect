@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**The Architect** - A self-modifying Matrix bot using `matrix-nio` and Claude Code CLI. The bot can dynamically generate and add new commands to itself using natural language descriptions. Users send `!add -n <name> -d "<description>"` and the bot uses Claude Code CLI to generate code, validates it, commits to git, and restarts to load the new command. Architecture prioritizes safety, modularity, and extensibility.
+**The Architect** - A self-modifying Matrix bot using `matrix-nio` and Claude Code CLI. The bot can dynamically generate and add new commands to itself using natural language descriptions. Users send `!add -n <name> -d "<description>"` and the bot uses Claude Code CLI to generate code, validates it, commits to git, and restarts to load the new command. The bot also features OpenAI GPT-5 integration for conversational AI responses when mentioned (without using commands). Architecture prioritizes safety, modularity, and extensibility.
 
 ## Development Commands
 
@@ -22,8 +22,9 @@ pip install -r requirements.txt
 
 # Copy example config and edit
 cp config.example.toml config.toml
-# Create .env file with Matrix token:
+# Create .env file with tokens:
 # MATRIX_ACCESS_TOKEN="syt_xxx"
+# OPENAI_API_KEY="sk-xxx"  # Required for AI mention responses
 # Note: ANTHROPIC_API_KEY no longer needed (Claude Code CLI uses its own auth)
 ```
 
@@ -51,7 +52,7 @@ pytest tests/test_handlers.py -v
 
 **bot/config.py** - Configuration management
 - Loads and validates `config.toml` using `tomllib` (Python 3.11+) or `tomli` fallback
-- Exposes `BotConfig.access_token` from environment (loaded from `.env`)
+- Exposes `BotConfig.access_token` and `BotConfig.openai_api_key` from environment (loaded from `.env`)
 - Note: `anthropic_api_key` field still exists for backward compatibility but is no longer required
 - Fails fast if required config keys are missing
 - Config keys: `homeserver`, `user_id`, `device_id`, `display_name`, `log_level`, `allowed_rooms`, `enable_auto_commit`
@@ -63,8 +64,10 @@ pytest tests/test_handlers.py -v
 - `execute_command(body)`: Matches message against patterns and executes handler
 
 **bot/handlers.py** - Message handling
-- `generate_reply(body)`: Now delegates to command registry via `execute_command()`
+- `generate_reply(body)`: Delegates to command registry via `execute_command()`
 - `on_message(client, room, event)`: Event handler that filters messages and sends replies as threaded messages
+- Message filtering: Self-messages, historical events, and non-allowed rooms are filtered out
+- Command priority: Tries command execution first; if no command matches and bot is mentioned, generates AI reply using OpenAI
 - Threading: Intelligently determines thread root by checking if incoming event is already in a thread, then uses `rel_type: "m.thread"` to ensure all replies stay in the same thread. Includes `m.in_reply_to` fallback for non-thread-aware clients
 - Timestamp filtering: Ignores historical events with `server_timestamp < START_TIME_MS - HISTORICAL_SKEW_MS` (5s skew)
 - Room filtering: Uses `_config.allowed_rooms` from config.toml (set via `set_config()`)
@@ -100,6 +103,16 @@ pytest tests/test_handlers.py -v
 - Maintains same PID and arguments
 - Called after successful command add/remove operations
 
+**bot/openai_integration.py** - OpenAI GPT-5 integration for conversational AI
+- `is_bot_mentioned()`: Detects if bot's user_id appears in message body or formatted_body
+- `get_thread_context()`: Fetches up to 50 messages from a thread using `client.room_messages()`
+- `build_conversation_history()`: Converts Matrix messages to OpenAI API format with role labels
+- `call_openai_api()`: Makes HTTP POST requests to OpenAI Chat Completions API using aiohttp
+- `generate_ai_reply()`: Main function that orchestrates thread context gathering, API calls, and error handling
+- Uses GPT-5 model with "The Architect" Matrix-themed system prompt
+- Retry logic: Two attempts with 2-second delay between failures
+- Returns user-friendly error messages on API failures
+
 ### Key Architectural Decisions
 
 1. **Dynamic command system**: Commands are individual Python modules in `bot/commands/`. Each uses `@command` decorator for registration. Registry auto-loads on startup.
@@ -119,6 +132,8 @@ pytest tests/test_handlers.py -v
 8. **Config-based room allowlist**: Room filtering now uses `allowed_rooms` from config.toml rather than hardcoded values.
 
 9. **Thread-based replies**: Bot replies are sent as threaded messages using Matrix's `m.thread` relation type. The bot intelligently detects if an incoming message is already part of a thread and replies to the same thread root, keeping entire conversations organized together. The `m.in_reply_to` fallback is included for clients that don't support threads.
+
+10. **Mention-based AI responses**: When the bot is mentioned (user_id appears in message) and no command matches, the bot generates an AI response using OpenAI GPT-5. This allows natural conversation without rigid command syntax. The bot fetches full thread context (up to 50 messages) to maintain conversation continuity. Commands always take priority over AI responses to prevent accidental AI invocations.
 
 ## Development Patterns
 
@@ -157,9 +172,10 @@ Add tests in `tests/commands/test_mycommand.py`. Restart bot to load.
 - Core system tests in `tests/test_*.py`
 
 ### Security
-- **Never log or print tokens**: Matrix access token is sensitive
+- **Never log or print tokens**: Matrix access token and OpenAI API key are sensitive
 - **All secrets from environment**: Load via `.env` file, never hardcode
 - **Claude Code CLI auth**: Uses its own authentication system (separate from bot)
+- **OpenAI API key**: Required for AI mention responses, stored in `.env` as `OPENAI_API_KEY`
 - **Code validation**: All generated code goes through AST validation to block dangerous operations
 - **Protected commands**: Core meta-commands (add, remove, list) cannot be removed
 - **Git tracking**: All code changes are version controlled for audit trail
@@ -198,3 +214,9 @@ Add tests in `tests/commands/test_mycommand.py`. Restart bot to load.
 11. **Command loading order**: Commands are loaded alphabetically by filename. If order matters, use numeric prefixes (e.g., `01_base.py`, `02_advanced.py`).
 
 12. **Thread-based replies**: All bot replies are sent as threaded messages using Matrix's threading feature. This means responses appear in a thread rooted at the user's original message. Commands should not override this behavior unless there's a specific reason to do so.
+
+13. **OpenAI API key requirement**: The mention-based AI responses require a valid OpenAI API key in the `.env` file. Without it, the bot will raise a RuntimeError on startup when config is loaded. If you don't want AI responses, you can comment out the mention detection logic in `bot/handlers.py` or simply don't mention the bot outside of commands.
+
+14. **Thread context limitations**: The bot fetches up to 50 messages from a thread for AI context. For very long threads, earlier messages will be truncated. The `matrix-nio` library doesn't have native thread API support, so the bot filters messages manually by checking `m.relates_to` fields.
+
+15. **Self-message filtering**: The bot now filters out its own messages to prevent infinite loops. This is critical for the AI response feature, as the bot would otherwise respond to its own AI-generated messages.

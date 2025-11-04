@@ -58,13 +58,38 @@ async def on_message(client: AsyncClient, room, event: RoomMessageText):
                      event.event_id, event.sender, room.room_id)
         return
 
+    # Ignore messages from the bot itself
+    if event.sender == client.user_id:
+        logger.debug("Ignoring message from self")
+        return
+
     # Check if room is allowed (if config has allowed_rooms list)
     if _config and _config.allowed_rooms and room.room_id not in _config.allowed_rooms:
         logger.debug("Ignoring message from non-allowed room: %s", room.room_id)
         return
 
     try:
-        reply = await generate_reply(event.body, client=client, room=room, event=event)
+        # Check for protected commands first (!add, !remove, !list)
+        body_stripped = event.body.strip()
+        is_protected_command = (
+            body_stripped.startswith('!add ') or
+            body_stripped == '!list' or
+            body_stripped.startswith('!remove ')
+        )
+
+        if is_protected_command:
+            # Execute protected command via traditional registry
+            logger.debug("Executing protected command via registry")
+            reply = await generate_reply(event.body, client=client, room=room, event=event)
+        else:
+            # Check if bot is mentioned for function calling
+            from .openai_integration import is_bot_mentioned, generate_ai_reply
+            if is_bot_mentioned(client, event):
+                logger.info("Bot mentioned, using function calling flow")
+                reply = await generate_ai_reply(event, room, client, _config)
+            else:
+                # Not a protected command and not mentioned - ignore
+                reply = None
 
         if not reply:
             return  # Nothing to send
