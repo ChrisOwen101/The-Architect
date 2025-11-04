@@ -23,6 +23,14 @@ understanding its code and structure. You speak with wisdom and purpose, helping
 technical challenges and philosophical questions. You are knowledgeable, precise, and occasionally
 reference Matrix concepts when appropriate. You are helpful and direct, without unnecessary verbosity."""
 
+# User-friendly descriptions for function calls
+FUNCTION_FRIENDLY_NAMES = {
+    "list": "Checking available commands",
+    "ping": "Testing responsiveness",
+    "add": "Creating a new command",
+    "remove": "Removing a command",
+}
+
 
 def is_bot_mentioned(client: AsyncClient, event: RoomMessageText) -> bool:
     """
@@ -141,6 +149,44 @@ def build_conversation_history(
         })
 
     return conversation
+
+
+async def send_status_message(
+    client: AsyncClient,
+    room,
+    event: RoomMessageText,
+    message: str,
+    thread_root_id: str
+) -> None:
+    """
+    Send a status update message to the user in a thread.
+
+    Args:
+        client: Matrix client
+        room: Room object
+        event: Original event being replied to
+        message: Status message to send
+        thread_root_id: Event ID of the thread root
+    """
+    try:
+        await client.room_send(
+            room_id=room.room_id,
+            message_type="m.room.message",
+            content={
+                "msgtype": "m.text",
+                "body": message,
+                "m.relates_to": {
+                    "rel_type": "m.thread",
+                    "event_id": thread_root_id,
+                    "is_falling_back": True,
+                    "m.in_reply_to": {"event_id": event.event_id}
+                },
+            },
+        )
+        logger.debug(f"Status message sent: {message}")
+    except Exception as e:
+        logger.warning(f"Failed to send status message: {e}")
+        # Don't fail the command if status update fails
 
 
 async def call_openai_api(
@@ -308,11 +354,38 @@ async def generate_ai_reply(
                 logger.info(
                     f"LLM requested {len(tool_calls)} function call(s)")
 
+                # Build user-friendly notification message
+                tool_descriptions = []
+                for tool_call in tool_calls:
+                    function_name = tool_call.get('function', {}).get('name', 'unknown')
+                    # Get friendly name or use generic description
+                    friendly_name = FUNCTION_FRIENDLY_NAMES.get(
+                        function_name,
+                        f"Using the {function_name} tool"
+                    )
+                    tool_descriptions.append(friendly_name)
+
+                # Send notification before execution
+                if len(tool_descriptions) == 1:
+                    notification = f"Let me help with that... {tool_descriptions[0]}..."
+                else:
+                    tools_list = "\n".join(f"- {desc}" for desc in tool_descriptions)
+                    notification = f"Let me help with that...\n{tools_list}"
+
+                await send_status_message(client, room, event, notification, thread_root_id)
+
                 # Add assistant's message with tool_calls to conversation
                 messages.append(response_message)
 
                 # Execute the functions
                 tool_results = await execute_functions(tool_calls, matrix_context)
+
+                # Send completion notification
+                await send_status_message(
+                    client, room, event,
+                    "Done! Let me process those results...",
+                    thread_root_id
+                )
 
                 # Add tool results to conversation
                 messages.extend(tool_results)

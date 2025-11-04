@@ -1,7 +1,6 @@
 """Remove command - removes a dynamically added command."""
 from __future__ import annotations
 import logging
-import re
 from pathlib import Path
 from typing import Optional
 from . import command, get_registry
@@ -16,17 +15,17 @@ PROTECTED_COMMANDS = {"add", "remove", "list", "ping", "greetings"}
 
 @command(
     name="remove",
-    description="Remove a dynamically added command (usage: !remove <command_name>)",
-    pattern=r"^!remove\s+(\w+)$"
+    description="Remove a dynamically added command",
+    params=[
+        ("command_name", str, "Name of the command to remove", True)
+    ]
 )
-async def remove_handler(body: str) -> Optional[str]:
-    """Remove a command from the system."""
-    # Parse command name
-    match = re.match(r"^!remove\s+(\w+)$", body.strip())
-    if not match:
-        return "Usage: !remove <command_name>\nExample: !remove calculate"
+async def remove_handler(command_name: str, matrix_context: Optional[dict] = None) -> Optional[str]:
+    """Remove a command from the system.
 
-    command_name = match.group(1).lower()
+    command_name: Name of the command to remove
+    """
+    command_name = command_name.lower()
 
     # Check if it's a protected command
     if command_name in PROTECTED_COMMANDS:
@@ -35,7 +34,7 @@ async def remove_handler(body: str) -> Optional[str]:
     # Check if command exists
     registry = get_registry()
     if not registry.get_command(command_name):
-        return f"Command '{command_name}' not found. Use !list to see available commands."
+        return f"Command '{command_name}' not found. Mention me and say 'list' to see available commands."
 
     # Get file paths
     command_file = Path(f"bot/commands/{command_name}.py")

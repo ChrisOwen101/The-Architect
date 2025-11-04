@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**The Architect** - A self-modifying Matrix bot using `matrix-nio` and Claude Code CLI. The bot can dynamically generate and add new commands to itself using natural language descriptions. Users send `!add -n <name> -d "<description>"` and the bot uses Claude Code CLI to generate code, validates it, commits to git, and restarts to load the new command. The bot also features OpenAI GPT-5 integration for conversational AI responses when mentioned (without using commands). Architecture prioritizes safety, modularity, and extensibility.
+**The Architect** - A self-modifying Matrix bot using `matrix-nio` and Claude Code CLI. The bot can dynamically generate and add new commands to itself using natural language descriptions. Users mention the bot and describe what they want (e.g., "@architect add a command called foo that does bar"), and the bot uses OpenAI function calling with Claude Code CLI to generate code, validates it, commits to git, and restarts to load the new command. All commands are invoked via natural language mentions and processed through OpenAI GPT-5 function calling. Architecture prioritizes safety, modularity, and extensibility.
 
 ## Development Commands
 
@@ -17,7 +17,7 @@ source .venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Install Claude Code CLI (required for /add command)
+# Install Claude Code CLI (required for add command)
 # Visit: https://docs.claude.com/claude-code
 
 # Copy example config and edit
@@ -58,16 +58,19 @@ pytest tests/test_handlers.py -v
 - Config keys: `homeserver`, `user_id`, `device_id`, `display_name`, `log_level`, `allowed_rooms`, `enable_auto_commit`
 
 **bot/commands/__init__.py** - Dynamic command registry system
-- `CommandRegistry`: Manages command registration and execution
-- `@command` decorator: Registers commands with name, description, and regex pattern
+- `CommandRegistry`: Manages command registration and execution with type-annotated parameters
+- `@command` decorator: Registers commands with name, description, and optional parameter definitions (no patterns)
+- Parameter definitions: List of tuples (param_name, param_type, description, required)
 - `load_commands()`: Auto-discovers and loads all `.py` files in `bot/commands/`
-- `execute_command(body)`: Matches message against patterns and executes handler
+- `execute_command(name, arguments)`: Executes command by name with structured arguments dictionary
+- `generate_function_schemas()`: Generates OpenAI function calling schemas from command parameters
 
 **bot/handlers.py** - Message handling
-- `generate_reply(body)`: Delegates to command registry via `execute_command()`
+- `generate_reply(body)`: Deprecated, now routes to OpenAI function calling when bot is mentioned
 - `on_message(client, room, event)`: Event handler that filters messages and sends replies as threaded messages
 - Message filtering: Self-messages, historical events, and non-allowed rooms are filtered out
-- Command priority: Tries command execution first; if no command matches and bot is mentioned, generates AI reply using OpenAI
+- **Mention-based invocation**: All commands require bot mention and are processed via OpenAI function calling
+- Command execution: OpenAI decides which functions to call based on user's natural language request
 - Threading: Intelligently determines thread root by checking if incoming event is already in a thread, then uses `rel_type: "m.thread"` to ensure all replies stay in the same thread. Includes `m.in_reply_to` fallback for non-thread-aware clients
 - Timestamp filtering: Ignores historical events with `server_timestamp < START_TIME_MS - HISTORICAL_SKEW_MS` (5s skew)
 - Room filtering: Uses `_config.allowed_rooms` from config.toml (set via `set_config()`)
@@ -115,25 +118,27 @@ pytest tests/test_handlers.py -v
 
 ### Key Architectural Decisions
 
-1. **Dynamic command system**: Commands are individual Python modules in `bot/commands/`. Each uses `@command` decorator for registration. Registry auto-loads on startup.
+1. **Type-annotated command system**: Commands are individual Python modules in `bot/commands/`. Each uses `@command` decorator with explicit parameter definitions (name, type, description, required). No regex patterns - all parameters are type-safe.
 
-2. **Self-modifying capability**: `!add` command uses Claude Code CLI to generate new command code. Claude Code writes files directly, code is validated, committed to git, and bot restarts to load it.
+2. **Natural language invocation**: All commands are invoked by mentioning the bot with natural language (e.g., "@architect list commands", "@architect add a dice roller"). OpenAI GPT-5 function calling interprets user intent and maps to appropriate command with structured parameters.
 
-3. **Safety-first validation**: All generated code goes through AST parsing, dangerous operation detection, and compilation checks before execution.
+3. **Self-modifying capability**: `add` command uses OpenAI function calling + Claude Code CLI to generate new command code. Claude Code writes files directly, code is validated, committed to git, and bot restarts to load it.
 
-4. **Git integration**: All code changes are automatically committed (if `enable_auto_commit` is true) for version control and rollback capability.
+4. **Safety-first validation**: All generated code goes through AST parsing, dangerous operation detection, and compilation checks before execution.
 
-5. **Process restart over hot reload**: Bot uses `os.execv()` for clean restart rather than module reloading to avoid stale state issues.
+5. **Git integration**: All code changes are automatically committed (if `enable_auto_commit` is true) for version control and rollback capability.
 
-6. **Token injection pattern**: Uses pre-issued access tokens (Matrix + Anthropic) rather than password login. The `client.user_id` must be set manually when injecting tokens (handled in `login_if_needed` at bot/main.py:42).
+6. **Process restart over hot reload**: Bot uses `os.execv()` for clean restart rather than module reloading to avoid stale state issues.
 
-7. **Historical event filtering**: Uses bot start time (`START_TIME_MS`) to filter old messages during initial sync, preventing replies to historical messages.
+7. **Token injection pattern**: Uses pre-issued access tokens (Matrix + OpenAI) rather than password login. The `client.user_id` must be set manually when injecting tokens (handled in `login_if_needed` at bot/main.py:42).
 
-8. **Config-based room allowlist**: Room filtering now uses `allowed_rooms` from config.toml rather than hardcoded values.
+8. **Historical event filtering**: Uses bot start time (`START_TIME_MS`) to filter old messages during initial sync, preventing replies to historical messages.
 
-9. **Thread-based replies**: Bot replies are sent as threaded messages using Matrix's `m.thread` relation type. The bot intelligently detects if an incoming message is already part of a thread and replies to the same thread root, keeping entire conversations organized together. The `m.in_reply_to` fallback is included for clients that don't support threads.
+9. **Config-based room allowlist**: Room filtering uses `allowed_rooms` from config.toml rather than hardcoded values.
 
-10. **Mention-based AI responses**: When the bot is mentioned (user_id appears in message) and no command matches, the bot generates an AI response using OpenAI GPT-5. This allows natural conversation without rigid command syntax. The bot fetches full thread context (up to 50 messages) to maintain conversation continuity. Commands always take priority over AI responses to prevent accidental AI invocations.
+10. **Thread-based replies**: Bot replies are sent as threaded messages using Matrix's `m.thread` relation type. The bot intelligently detects if an incoming message is already part of a thread and replies to the same thread root, keeping entire conversations organized together. The `m.in_reply_to` fallback is included for clients that don't support threads.
+
+11. **OpenAI function calling integration**: The bot automatically generates OpenAI function schemas from command parameter definitions. This enables natural language command invocation without manual pattern matching. The bot fetches full thread context (up to 50 messages) to maintain conversation continuity.
 
 ## Development Patterns
 

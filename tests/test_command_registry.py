@@ -22,7 +22,7 @@ async def test_registry_execute_matching():
     from bot.commands import execute_command, get_registry
 
     # Commands should already be loaded from bot/commands/
-    result = await execute_command("!ping")
+    result = await execute_command("ping", {})
     assert result == "pong"
 
 
@@ -31,8 +31,9 @@ async def test_registry_execute_no_match():
     """Test executing with no matching command."""
     from bot.commands import execute_command
 
-    result = await execute_command("this does not match any command")
-    assert result is None
+    result = await execute_command("nonexistent_command", {})
+    assert result is not None  # Returns error message
+    assert "not found" in result.lower()
 
 
 @pytest.mark.asyncio

@@ -3,9 +3,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import logging
-import os
-import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Awaitable, Any
 
@@ -13,13 +11,22 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class CommandParam:
+    """Represents a command parameter."""
+    name: str
+    param_type: type
+    description: str
+    required: bool = True
+
+
+@dataclass
 class Command:
     """Represents a registered command."""
     name: str
     description: str
-    pattern: str  # Regex pattern to match command
-    handler: Callable[[str], Awaitable[Optional[str]]]
-    module_name: str  # For reload tracking
+    params: list[CommandParam] = field(default_factory=list)
+    handler: Callable[..., Awaitable[Optional[str]]] = None
+    module_name: str = "unknown"
 
 
 class CommandRegistry:
@@ -27,76 +34,77 @@ class CommandRegistry:
 
     def __init__(self):
         self._commands: dict[str, Command] = {}
-        self._patterns: list[tuple[re.Pattern, Command]] = []
 
-    def register(self, name: str, description: str, pattern: str,
-                 handler: Callable[[str], Awaitable[Optional[str]]],
+    def register(self, name: str, description: str, params: list[tuple[str, type, str, bool]],
+                 handler: Callable[..., Awaitable[Optional[str]]],
                  module_name: str = "unknown") -> None:
-        """Register a command with the registry."""
+        """Register a command with the registry.
+
+        Args:
+            name: Command name
+            description: Command description
+            params: List of tuples (param_name, param_type, param_description, required)
+            handler: Async handler function
+            module_name: Module name for tracking
+        """
+        # Convert param tuples to CommandParam objects
+        command_params = [
+            CommandParam(name=p[0], param_type=p[1], description=p[2], required=p[3])
+            for p in params
+        ]
+
         cmd = Command(
             name=name,
             description=description,
-            pattern=pattern,
+            params=command_params,
             handler=handler,
             module_name=module_name
         )
         self._commands[name] = cmd
-        # Compile and cache regex pattern
-        self._patterns.append((re.compile(pattern, re.IGNORECASE), cmd))
-        logger.info(f"Registered command: {name} (pattern: {pattern})")
+        logger.info(f"Registered command: {name} with {len(command_params)} parameter(s)")
 
     def unregister(self, name: str) -> bool:
         """Unregister a command by name."""
         if name not in self._commands:
             return False
 
-        cmd = self._commands.pop(name)
-        # Remove from patterns list
-        self._patterns = [(p, c) for p, c in self._patterns if c.name != name]
+        self._commands.pop(name)
         logger.info(f"Unregistered command: {name}")
         return True
 
-    async def execute(self, body: str, matrix_context: Optional[dict[str, Any]] = None) -> Optional[str]:
-        """Execute the first matching command.
+    async def execute(self, name: str, arguments: dict[str, Any],
+                     matrix_context: Optional[dict[str, Any]] = None) -> Optional[str]:
+        """Execute a command by name with structured arguments.
 
         Args:
-            body: The message body to match against command patterns
+            name: Command name to execute
+            arguments: Dictionary of parameter name -> value
             matrix_context: Optional dictionary containing Matrix client, room, and event
                            Keys: 'client', 'room', 'event'
         """
-        body_stripped = body.strip()
+        cmd = self._commands.get(name)
+        if not cmd:
+            logger.warning(f"Command not found: {name}")
+            return f"Command '{name}' not found."
 
-        # Try to match against all registered patterns
-        for pattern, cmd in self._patterns:
-            if pattern.match(body_stripped):
-                try:
-                    logger.debug(f"Executing command: {cmd.name}")
+        try:
+            logger.debug(f"Executing command: {cmd.name} with arguments: {arguments}")
 
-                    # Inspect handler signature
-                    sig = inspect.signature(cmd.handler)
-                    params = sig.parameters
+            # Inspect handler signature
+            sig = inspect.signature(cmd.handler)
+            params = sig.parameters
 
-                    # Check if handler has 'body' parameter (old-style)
-                    has_body_param = 'body' in params
-                    has_context_param = 'matrix_context' in params
+            # Check if handler has 'matrix_context' parameter
+            has_context_param = 'matrix_context' in params
 
-                    if has_body_param:
-                        # Old-style handler with body parameter
-                        if has_context_param and matrix_context:
-                            return await cmd.handler(body_stripped, matrix_context=matrix_context)
-                        else:
-                            return await cmd.handler(body_stripped)
-                    else:
-                        # New-style handler without body parameter (structured params)
-                        if has_context_param and matrix_context:
-                            return await cmd.handler(matrix_context=matrix_context)
-                        else:
-                            return await cmd.handler()
-                except Exception:
-                    logger.exception(f"Error executing command {cmd.name}")
-                    return f"Error executing command '{cmd.name}'. Check logs for details."
-
-        return None  # No command matched
+            # Call handler with arguments
+            if has_context_param and matrix_context:
+                return await cmd.handler(**arguments, matrix_context=matrix_context)
+            else:
+                return await cmd.handler(**arguments)
+        except Exception:
+            logger.exception(f"Error executing command {cmd.name}")
+            return f"Error executing command '{cmd.name}'. Check logs for details."
 
     def list_commands(self) -> list[tuple[str, str]]:
         """Return list of (name, description) for all commands."""
@@ -109,13 +117,12 @@ class CommandRegistry:
     def clear(self) -> None:
         """Clear all registered commands."""
         self._commands.clear()
-        self._patterns.clear()
 
     def generate_function_schemas(self) -> list[dict[str, Any]]:
         """
         Generate OpenAI function calling schemas from registered commands.
 
-        Uses handler signatures and docstrings to generate schemas.
+        Uses decorator parameter definitions to generate schemas.
 
         Returns:
             List of function schema dicts in OpenAI format
@@ -124,65 +131,41 @@ class CommandRegistry:
         schemas = []
 
         for name, cmd in self._commands.items():
-            # Inspect handler signature to extract parameters
-            sig = inspect.signature(cmd.handler)
+            # Build parameters schema from command params
             parameters_schema = {
                 "type": "object",
                 "properties": {},
                 "required": []
             }
 
-            for param_name, param in sig.parameters.items():
-                # Skip 'body', 'matrix_context' - these are internal
-                if param_name in ('body', 'matrix_context'):
-                    continue
-
-                # Extract type from annotation
+            for param in cmd.params:
+                # Map Python types to JSON schema types
                 param_type = "string"  # Default
-                if param.annotation != inspect.Parameter.empty:
-                    if param.annotation == str:
-                        param_type = "string"
-                    elif param.annotation == int:
-                        param_type = "integer"
-                    elif param.annotation == float:
-                        param_type = "number"
-                    elif param.annotation == bool:
-                        param_type = "boolean"
-                    elif hasattr(param.annotation, '__origin__'):
-                        # Handle Optional, List, etc.
-                        origin = param.annotation.__origin__
-                        if origin is list:
-                            param_type = "array"
-                        elif origin is dict:
-                            param_type = "object"
+                if param.param_type == str:
+                    param_type = "string"
+                elif param.param_type == int:
+                    param_type = "integer"
+                elif param.param_type == float:
+                    param_type = "number"
+                elif param.param_type == bool:
+                    param_type = "boolean"
+                elif hasattr(param.param_type, '__origin__'):
+                    # Handle Optional, List, etc.
+                    origin = param.param_type.__origin__
+                    if origin is list:
+                        param_type = "array"
+                    elif origin is dict:
+                        param_type = "object"
 
                 # Add parameter to schema
-                parameters_schema["properties"][param_name] = {
+                parameters_schema["properties"][param.name] = {
                     "type": param_type,
-                    "description": f"Parameter {param_name}"
+                    "description": param.description
                 }
 
-                # Mark as required if no default value
-                if param.default == inspect.Parameter.empty:
-                    parameters_schema["required"].append(param_name)
-
-            # Parse docstring for better descriptions if available
-            docstring = inspect.getdoc(cmd.handler)
-            param_descriptions = {}
-            if docstring:
-                # Simple docstring parsing - look for "param_name: description" patterns
-                for line in docstring.split('\n'):
-                    line = line.strip()
-                    if ':' in line and not line.startswith((':param', 'Args:', 'Returns:')):
-                        parts = line.split(':', 1)
-                        if len(parts) == 2:
-                            param_descriptions[parts[0].strip()
-                                               ] = parts[1].strip()
-
-            # Update parameter descriptions from docstring
-            for param_name in parameters_schema["properties"]:
-                if param_name in param_descriptions:
-                    parameters_schema["properties"][param_name]["description"] = param_descriptions[param_name]
+                # Mark as required if specified
+                if param.required:
+                    parameters_schema["required"].append(param.name)
 
             # Build function schema
             function_schema = {
@@ -205,18 +188,44 @@ class CommandRegistry:
 _registry = CommandRegistry()
 
 
-def command(name: str, description: str, pattern: str):
-    """Decorator to register a command handler.
+def command(name: str, description: str, params: Optional[list[tuple[str, type, str, bool]]] = None):
+    """Decorator to register a command handler with type-annotated parameters.
+
+    Args:
+        name: Command name
+        description: Command description
+        params: Optional list of tuples defining (param_name, param_type, param_description, required)
+                If None, command takes no parameters
 
     Usage:
-        @command(name="ping", description="Ping the bot", pattern=r"^!ping$")
-        async def ping_handler(body: str) -> Optional[str]:
+        # Command with parameters
+        @command(
+            name="add",
+            description="Add a new command",
+            params=[
+                ("command_name", str, "Name of the command to add", True),
+                ("description", str, "Description of what the command does", True)
+            ]
+        )
+        async def add_handler(command_name: str, description: str, matrix_context: Optional[dict] = None) -> Optional[str]:
+            # Implementation
+            return "Command added"
+
+        # Parameterless command
+        @command(
+            name="ping",
+            description="Check if bot is online"
+        )
+        async def ping_handler(matrix_context: Optional[dict] = None) -> Optional[str]:
             return "pong"
     """
-    def decorator(func: Callable[[str], Awaitable[Optional[str]]]):
+    if params is None:
+        params = []
+
+    def decorator(func: Callable[..., Awaitable[Optional[str]]]):
         # Get the module name of the function for tracking
         module_name = func.__module__
-        _registry.register(name, description, pattern, func, module_name)
+        _registry.register(name, description, params, func, module_name)
         return func
     return decorator
 
@@ -245,15 +254,17 @@ def load_commands() -> None:
             logger.exception(f"Failed to load command module: {module_name}")
 
 
-async def execute_command(body: str, matrix_context: Optional[dict[str, Any]] = None) -> Optional[str]:
-    """Execute a command based on message body. This is the main entry point.
+async def execute_command(name: str, arguments: dict[str, Any],
+                         matrix_context: Optional[dict[str, Any]] = None) -> Optional[str]:
+    """Execute a command by name with structured arguments.
 
     Args:
-        body: The message body to match against command patterns
+        name: Command name to execute
+        arguments: Dictionary of parameter name -> value
         matrix_context: Optional dictionary containing Matrix client, room, and event
                        Keys: 'client', 'room', 'event'
     """
-    return await _registry.execute(body, matrix_context=matrix_context)
+    return await _registry.execute(name, arguments, matrix_context=matrix_context)
 
 
 def get_registry() -> CommandRegistry:

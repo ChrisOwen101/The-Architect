@@ -6,10 +6,9 @@ from . import command
 
 @command(
     name="ping",
-    description="Check if the bot is online and responsive",
-    pattern=r"^!ping$"
+    description="Check if the bot is online and responsive"
 )
-async def ping_handler() -> Optional[str]:
+async def ping_handler(matrix_context: Optional[dict] = None) -> Optional[str]:
     """
     Check if the bot is online and responsive.
 

@@ -157,13 +157,13 @@ Command name: {command_name}
 Description: {command_description}
 
 **Command file requirements (bot/commands/{command_name}.py):**
-- Create a single async function: `async def {command_name}_handler(body: str) -> Optional[str]`
-- The function should parse the command from `body` (the full message text)
+- Create a single async function with type-annotated parameters
 - Return a string response to send back to the user, or None if no response needed
 - Keep responses under 4000 characters
-- Include the @command decorator with appropriate pattern
-- The pattern should match `!{command_name}` followed by any arguments
+- Include the @command decorator with type-annotated parameters (NO pattern parameter)
+- Parameters should be defined as tuples: (param_name, type, description, required)
 - Include clear docstring explaining what the command does
+- Always include matrix_context: Optional[dict] = None as the last parameter
 
 **Command file structure:**
 ```python
@@ -174,11 +174,25 @@ from . import command
 @command(
     name="{command_name}",
     description="{command_description}",
-    pattern=r"^!{command_name}\\s*(.*)$"
+    params=[
+        ("param1", str, "Description of param1", True),
+        ("param2", int, "Description of param2", False)
+    ]
 )
-async def {command_name}_handler(body: str) -> Optional[str]:
+async def {command_name}_handler(param1: str, param2: int = 0, matrix_context: Optional[dict] = None) -> Optional[str]:
     \"\"\"Your docstring here.\"\"\"
     # Your implementation here
+    return "Your response"
+```
+
+For parameterless commands, omit the params argument or use an empty list:
+```python
+@command(
+    name="{command_name}",
+    description="{command_description}"
+)
+async def {command_name}_handler(matrix_context: Optional[dict] = None) -> Optional[str]:
+    \"\"\"Your docstring here.\"\"\"
     return "Your response"
 ```
 
@@ -188,9 +202,8 @@ async def {command_name}_handler(body: str) -> Optional[str]:
 - Test edge cases (empty input, invalid input, etc.)
 - Import: `import pytest` and `from bot.commands.{command_name} import {command_name}_handler`
 - Test function names should be descriptive (e.g., `test_{command_name}_success`)
-- Each test should call the handler function and assert the response
-
-**Escalate** to the user 
+- Call the handler with structured parameters (NOT body strings)
+- Example: `result = await {command_name}_handler(param1="test", param2=5)`
 
 Please create both files now. Make sure to handle edge cases gracefully and keep the code simple and focused."""
 
@@ -317,7 +330,7 @@ from bot.commands.{command_name} import {command_name}_handler
 @pytest.mark.asyncio
 async def test_{command_name}_basic():
     \"\"\"Basic test for {command_name} command.\"\"\"
-    result = await {command_name}_handler("!{command_name} test")
+    result = await {command_name}_handler()
     assert result is not None
 """
                 # Write the fallback test file

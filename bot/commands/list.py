@@ -6,10 +6,9 @@ from . import command, get_registry
 
 @command(
     name="list",
-    description="List all available commands",
-    pattern=r"^!list$"
+    description="List all available commands"
 )
-async def list_handler(body: str) -> Optional[str]:
+async def list_handler(matrix_context: Optional[dict] = None) -> Optional[str]:
     """List all registered commands."""
     registry = get_registry()
     commands_list = registry.list_commands()
@@ -20,6 +19,6 @@ async def list_handler(body: str) -> Optional[str]:
     # Format the list nicely
     lines = ["Available commands:"]
     for name, description in commands_list:
-        lines.append(f"  !{name} - {description}")
+        lines.append(f"  {name} - {description}")
 
     return "\n".join(lines)

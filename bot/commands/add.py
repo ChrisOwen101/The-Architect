@@ -15,20 +15,23 @@ logger = logging.getLogger(__name__)
 
 @command(
     name="add",
-    description="Add a new command using AI (usage: !add -n <name> -d \"<description>\")",
-    pattern=r"^!add\s+"
+    description="Add new functionality/tools to the bot",
+    params=[
+        ("command_name", str, "Name of the new command (alphanumeric, lowercase)", True),
+        ("description", str, "Description of what the command does", True)
+    ]
 )
-async def add_handler(body: str, matrix_context: Optional[dict[str, Any]] = None) -> Optional[str]:
+async def add_handler(command_name: str, description: str, matrix_context: Optional[dict[str, Any]] = None) -> Optional[str]:
     """
-    Add a new command using Claude AI to generate the code.
-
-    Usage: !add -n <command_name> -d "<description>"
-    Example: !add -n calculate -d "Calculate mathematical expressions"
+    Add new functionality/tools to the bot.
 
     Args:
-        body: The command message body
+        command_name: Name of the new command (alphanumeric, lowercase)
+        description: Description of what the command does
         matrix_context: Optional Matrix context containing client, room, event
     """
+    command_name = command_name.lower()
+    command_description = description
     # Extract Matrix components for sending status updates
     client = None
     room = None
@@ -48,7 +51,8 @@ async def add_handler(body: str, matrix_context: Optional[dict[str, Any]] = None
             # Determine thread root (same logic as in handlers.py)
             thread_root = event.event_id
             if hasattr(event, 'source') and isinstance(event.source, dict):
-                relates_to = event.source.get('content', {}).get('m.relates_to', {})
+                relates_to = event.source.get(
+                    'content', {}).get('m.relates_to', {})
                 if relates_to.get('rel_type') == 'm.thread':
                     thread_root = relates_to.get('event_id', event.event_id)
 
@@ -70,20 +74,6 @@ async def add_handler(body: str, matrix_context: Optional[dict[str, Any]] = None
         except Exception as e:
             logger.warning(f"Failed to send status update: {e}")
             # Don't fail the command if status update fails
-    # Parse arguments
-    name_match = re.search(r'-n\s+(\w+)', body)
-    desc_match = re.search(r'-d\s+"([^"]+)"', body)
-
-    if not name_match or not desc_match:
-        return (
-            "Usage: !add -n <command_name> -d \"<description>\"\n\n"
-            "Example: !add -n calculate -d \"Calculate mathematical expressions\"\n\n"
-            "The command name should be alphanumeric (no spaces).\n"
-            "The description should be in quotes."
-        )
-
-    command_name = name_match.group(1).lower()
-    command_description = desc_match.group(1)
 
     # Validate command name
     if not re.match(r'^[a-z][a-z0-9_]*$', command_name):
@@ -92,7 +82,7 @@ async def add_handler(body: str, matrix_context: Optional[dict[str, Any]] = None
     # Check if command already exists
     command_file = Path(f"bot/commands/{command_name}.py")
     if command_file.exists():
-        return f"Command '{command_name}' already exists. Use !remove first if you want to replace it."
+        return f"Command '{command_name}' already exists. Ask me to remove it first if you want to replace it."
 
     # Load config
     from ..config import load_config
@@ -106,7 +96,8 @@ async def add_handler(body: str, matrix_context: Optional[dict[str, Any]] = None
         return f"Configuration error: {e}"
 
     # Generate code using Claude Code CLI
-    logger.info(f"Generating code for command '{command_name}' using Claude Code CLI")
+    logger.info(
+        f"Generating code for command '{command_name}' using Claude Code CLI")
 
     # Note: Claude Code CLI will write files directly to bot/commands/ and tests/commands/
     # We'll validate the generated files after they're created
@@ -126,16 +117,19 @@ async def add_handler(body: str, matrix_context: Optional[dict[str, Any]] = None
         await send_status("Validating generated code...")
 
         # Validate generated code
-        is_valid, validation_error = validate_command_code(command_code, command_name)
+        is_valid, validation_error = validate_command_code(
+            command_code, command_name)
         if not is_valid:
-            logger.error(f"Generated code validation failed: {validation_error}")
+            logger.error(
+                f"Generated code validation failed: {validation_error}")
             return f"Generated code validation failed: {validation_error}"
 
         # Validate test code if generated
         if test_code:
             is_valid, validation_error = validate_test_code(test_code)
             if not is_valid:
-                logger.warning(f"Generated test code validation failed: {validation_error}")
+                logger.warning(
+                    f"Generated test code validation failed: {validation_error}")
                 test_code = None  # Skip test if invalid
 
         await send_status("Code validated successfully!")

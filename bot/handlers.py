@@ -23,27 +23,25 @@ def set_config(config):
 
 
 async def generate_reply(body: str, client: AsyncClient = None, room = None, event: RoomMessageText = None) -> str | None:
-    """Generate reply using the dynamic command registry.
+    """Generate reply using OpenAI function calling.
+
+    This function is deprecated but kept for backward compatibility.
+    All commands now go through the OpenAI function calling system.
 
     Args:
         body: The message body
-        client: Optional Matrix client (for commands that need to send messages)
+        client: Optional Matrix client
         room: Optional Matrix room
         event: Optional Matrix event
 
     Returns:
         Reply text or None
     """
-    # Build matrix context dictionary if we have the components
-    matrix_context = None
-    if client and room and event:
-        matrix_context = {
-            'client': client,
-            'room': room,
-            'event': event
-        }
-
-    return await execute_command(body, matrix_context=matrix_context)
+    # All commands now go through OpenAI function calling
+    from .openai_integration import is_bot_mentioned, generate_ai_reply
+    if is_bot_mentioned(client, event):
+        return await generate_ai_reply(event, room, client, _config)
+    return None
 
 
 def is_old_event(event) -> bool:
@@ -69,27 +67,15 @@ async def on_message(client: AsyncClient, room, event: RoomMessageText):
         return
 
     try:
-        # Check for protected commands first (!add, !remove, !list)
-        body_stripped = event.body.strip()
-        is_protected_command = (
-            body_stripped.startswith('!add ') or
-            body_stripped == '!list' or
-            body_stripped.startswith('!remove ')
-        )
+        # All commands now require bot mention and use OpenAI function calling
+        from .openai_integration import is_bot_mentioned, generate_ai_reply
 
-        if is_protected_command:
-            # Execute protected command via traditional registry
-            logger.debug("Executing protected command via registry")
-            reply = await generate_reply(event.body, client=client, room=room, event=event)
-        else:
-            # Check if bot is mentioned for function calling
-            from .openai_integration import is_bot_mentioned, generate_ai_reply
-            if is_bot_mentioned(client, event):
-                logger.info("Bot mentioned, using function calling flow")
-                reply = await generate_ai_reply(event, room, client, _config)
-            else:
-                # Not a protected command and not mentioned - ignore
-                reply = None
+        if not is_bot_mentioned(client, event):
+            # Not mentioned - ignore
+            return
+
+        logger.info("Bot mentioned, using function calling flow")
+        reply = await generate_ai_reply(event, room, client, _config)
 
         if not reply:
             return  # Nothing to send

@@ -8,11 +8,11 @@ from bot.commands import CommandRegistry
 class MockCommand:
     """Mock command for testing."""
 
-    def __init__(self, name, description, handler):
+    def __init__(self, name, description, handler, params=None):
         self.name = name
         self.description = description
         self.handler = handler
-        self.pattern = f"^!{name}$"
+        self.params = params or []
         self.module_name = "test"
 
 
@@ -26,7 +26,7 @@ async def test_execute_function_no_params():
     async def test_handler():
         return "success"
 
-    with patch('bot.function_executor.get_registry') as mock_get_registry:
+    with patch('bot.commands.get_registry') as mock_get_registry:
         mock_registry = MagicMock()
         mock_command = MockCommand("test", "Test command", test_handler)
         mock_registry._commands = {"test": mock_command}
@@ -44,7 +44,7 @@ async def test_execute_function_with_params():
     async def test_handler(name: str, count: int):
         return f"Hello {name}, count={count}"
 
-    with patch('bot.function_executor.get_registry') as mock_get_registry:
+    with patch('bot.commands.get_registry') as mock_get_registry:
         mock_registry = MagicMock()
         mock_command = MockCommand("test", "Test command", test_handler)
         mock_registry._commands = {"test": mock_command}
@@ -64,7 +64,7 @@ async def test_execute_function_with_matrix_context():
         assert matrix_context["test_key"] == "test_value"
         return f"Hello {name}"
 
-    with patch('bot.function_executor.get_registry') as mock_get_registry:
+    with patch('bot.commands.get_registry') as mock_get_registry:
         mock_registry = MagicMock()
         mock_command = MockCommand("test", "Test command", test_handler)
         mock_registry._commands = {"test": mock_command}
@@ -79,7 +79,7 @@ async def test_execute_function_with_matrix_context():
 @pytest.mark.asyncio
 async def test_execute_function_not_found():
     """Test executing a non-existent function."""
-    with patch('bot.function_executor.get_registry') as mock_get_registry:
+    with patch('bot.commands.get_registry') as mock_get_registry:
         mock_registry = MagicMock()
         mock_registry._commands = {}
         mock_get_registry.return_value = mock_registry
@@ -95,7 +95,7 @@ async def test_execute_function_argument_error():
     async def test_handler(name: str):
         return f"Hello {name}"
 
-    with patch('bot.function_executor.get_registry') as mock_get_registry:
+    with patch('bot.commands.get_registry') as mock_get_registry:
         mock_registry = MagicMock()
         mock_command = MockCommand("test", "Test command", test_handler)
         mock_registry._commands = {"test": mock_command}
@@ -116,7 +116,7 @@ async def test_execute_functions_parallel():
     async def echo_handler(message: str):
         return f"Echo: {message}"
 
-    with patch('bot.function_executor.get_registry') as mock_get_registry:
+    with patch('bot.commands.get_registry') as mock_get_registry:
         mock_registry = MagicMock()
         mock_registry._commands = {
             "ping": MockCommand("ping", "Ping", ping_handler),
@@ -157,7 +157,7 @@ async def test_execute_functions_with_error():
     async def success_handler():
         return "success"
 
-    with patch('bot.function_executor.get_registry') as mock_get_registry:
+    with patch('bot.commands.get_registry') as mock_get_registry:
         mock_registry = MagicMock()
         mock_registry._commands = {
             "success": MockCommand("success", "Success", success_handler),
@@ -204,18 +204,24 @@ def test_generate_function_schemas():
         """Greet a user."""
         return f"{greeting}, {name}!"
 
-    async def add_handler(body: str):
-        """Protected command - should be excluded."""
+    async def add_handler(command_name: str, description: str):
+        """Add command."""
         return "added"
 
-    registry.register("ping", "Ping the bot", r"^!ping$", ping_handler)
-    registry.register("greet", "Greet someone", r"^!greet", greet_handler)
-    registry.register("add", "Add command", r"^!add", add_handler)
+    registry.register("ping", "Ping the bot", [], ping_handler)
+    registry.register("greet", "Greet someone", [
+        ("name", str, "Name of person to greet", True),
+        ("greeting", str, "Greeting to use", False)
+    ], greet_handler)
+    registry.register("add", "Add command", [
+        ("command_name", str, "Name of command", True),
+        ("description", str, "Description", True)
+    ], add_handler)
 
     schemas = registry.generate_function_schemas()
 
-    # Should have 2 schemas (add is protected)
-    assert len(schemas) == 2
+    # Should have all 3 schemas
+    assert len(schemas) == 3
 
     # Check ping schema
     ping_schema = next(s for s in schemas if s["function"]["name"] == "ping")
@@ -230,35 +236,41 @@ def test_generate_function_schemas():
     assert "greeting" in greet_schema["function"]["parameters"]["properties"]
     assert greet_schema["function"]["parameters"]["properties"]["name"]["type"] == "string"
     assert "name" in greet_schema["function"]["parameters"]["required"]
-    assert "greeting" not in greet_schema["function"]["parameters"]["required"]  # Has default
+    assert "greeting" not in greet_schema["function"]["parameters"]["required"]  # Not required (False)
 
 
-def test_generate_function_schemas_excludes_protected():
-    """Test that protected commands are excluded from schemas."""
+def test_generate_function_schemas_all_commands():
+    """Test that all commands are included in schemas."""
     registry = CommandRegistry()
 
-    async def add_handler(body: str):
+    async def add_handler(command_name: str, description: str):
         return "added"
 
-    async def remove_handler(body: str):
+    async def remove_handler(command_name: str):
         return "removed"
 
-    async def list_handler(body: str):
+    async def list_handler():
         return "listed"
 
     async def safe_handler():
         return "safe"
 
-    registry.register("add", "Add", r"^!add", add_handler)
-    registry.register("remove", "Remove", r"^!remove", remove_handler)
-    registry.register("list", "List", r"^!list", list_handler)
-    registry.register("safe", "Safe", r"^!safe", safe_handler)
+    registry.register("add", "Add", [
+        ("command_name", str, "Name", True),
+        ("description", str, "Description", True)
+    ], add_handler)
+    registry.register("remove", "Remove", [
+        ("command_name", str, "Name", True)
+    ], remove_handler)
+    registry.register("list", "List", [], list_handler)
+    registry.register("safe", "Safe", [], safe_handler)
 
     schemas = registry.generate_function_schemas()
 
-    # Should only have safe command
-    assert len(schemas) == 1
-    assert schemas[0]["function"]["name"] == "safe"
+    # All 4 commands should be included
+    assert len(schemas) == 4
+    command_names = {s["function"]["name"] for s in schemas}
+    assert command_names == {"add", "remove", "list", "safe"}
 
 
 def test_generate_function_schemas_with_types():
@@ -273,7 +285,12 @@ def test_generate_function_schemas_with_types():
     ):
         return "ok"
 
-    registry.register("complex", "Complex", r"^!complex", complex_handler)
+    registry.register("complex", "Complex", [
+        ("text", str, "Text parameter", True),
+        ("count", int, "Count parameter", True),
+        ("ratio", float, "Ratio parameter", True),
+        ("enabled", bool, "Enabled parameter", True)
+    ], complex_handler)
 
     schemas = registry.generate_function_schemas()
 
@@ -285,7 +302,7 @@ def test_generate_function_schemas_with_types():
     assert props["ratio"]["type"] == "number"
     assert props["enabled"]["type"] == "boolean"
 
-    # All should be required (no defaults)
+    # All should be required
     required = schemas[0]["function"]["parameters"]["required"]
     assert set(required) == {"text", "count", "ratio", "enabled"}
 
@@ -317,7 +334,7 @@ async def test_function_calling_flow_integration():
         mock_get_context.return_value = [mock_event]
 
         # Mock get_registry
-        with patch('bot.openai_integration.get_registry') as mock_get_registry:
+        with patch('bot.commands.get_registry') as mock_get_registry:
             mock_registry = MagicMock()
             mock_registry.generate_function_schemas.return_value = []
             mock_get_registry.return_value = mock_registry
@@ -360,7 +377,7 @@ async def test_function_calling_with_tool_calls():
         async def ping_handler():
             return "pong"
 
-        with patch('bot.openai_integration.get_registry') as mock_get_registry:
+        with patch('bot.commands.get_registry') as mock_get_registry:
             mock_registry = MagicMock()
             mock_command = MockCommand("ping", "Ping", ping_handler)
             mock_registry._commands = {"ping": mock_command}
