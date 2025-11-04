@@ -1,12 +1,13 @@
 """Dynamic command registry system for The Architect bot."""
 from __future__ import annotations
 import importlib
+import inspect
 import logging
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, Awaitable
+from typing import Callable, Optional, Awaitable, Any
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +56,14 @@ class CommandRegistry:
         logger.info(f"Unregistered command: {name}")
         return True
 
-    async def execute(self, body: str) -> Optional[str]:
-        """Execute the first matching command."""
+    async def execute(self, body: str, matrix_context: Optional[dict[str, Any]] = None) -> Optional[str]:
+        """Execute the first matching command.
+
+        Args:
+            body: The message body to match against command patterns
+            matrix_context: Optional dictionary containing Matrix client, room, and event
+                           Keys: 'client', 'room', 'event'
+        """
         body_stripped = body.strip()
 
         # Try to match against all registered patterns
@@ -64,7 +71,17 @@ class CommandRegistry:
             if pattern.match(body_stripped):
                 try:
                     logger.debug(f"Executing command: {cmd.name}")
-                    return await cmd.handler(body_stripped)
+
+                    # Check if handler accepts matrix_context parameter
+                    sig = inspect.signature(cmd.handler)
+                    params = sig.parameters
+
+                    if 'matrix_context' in params and matrix_context:
+                        # Handler accepts Matrix context, pass it
+                        return await cmd.handler(body_stripped, matrix_context=matrix_context)
+                    else:
+                        # Handler doesn't accept Matrix context, call normally
+                        return await cmd.handler(body_stripped)
                 except Exception:
                     logger.exception(f"Error executing command {cmd.name}")
                     return f"Error executing command '{cmd.name}'. Check logs for details."
@@ -129,9 +146,15 @@ def load_commands() -> None:
             logger.exception(f"Failed to load command module: {module_name}")
 
 
-async def execute_command(body: str) -> Optional[str]:
-    """Execute a command based on message body. This is the main entry point."""
-    return await _registry.execute(body)
+async def execute_command(body: str, matrix_context: Optional[dict[str, Any]] = None) -> Optional[str]:
+    """Execute a command based on message body. This is the main entry point.
+
+    Args:
+        body: The message body to match against command patterns
+        matrix_context: Optional dictionary containing Matrix client, room, and event
+                       Keys: 'client', 'room', 'event'
+    """
+    return await _registry.execute(body, matrix_context=matrix_context)
 
 
 def get_registry() -> CommandRegistry:

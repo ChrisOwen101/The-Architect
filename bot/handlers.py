@@ -22,9 +22,28 @@ def set_config(config):
     _config = config
 
 
-async def generate_reply(body: str) -> str | None:
-    """Generate reply using the dynamic command registry."""
-    return await execute_command(body)
+async def generate_reply(body: str, client: AsyncClient = None, room = None, event: RoomMessageText = None) -> str | None:
+    """Generate reply using the dynamic command registry.
+
+    Args:
+        body: The message body
+        client: Optional Matrix client (for commands that need to send messages)
+        room: Optional Matrix room
+        event: Optional Matrix event
+
+    Returns:
+        Reply text or None
+    """
+    # Build matrix context dictionary if we have the components
+    matrix_context = None
+    if client and room and event:
+        matrix_context = {
+            'client': client,
+            'room': room,
+            'event': event
+        }
+
+    return await execute_command(body, matrix_context=matrix_context)
 
 
 def is_old_event(event) -> bool:
@@ -45,7 +64,7 @@ async def on_message(client: AsyncClient, room, event: RoomMessageText):
         return
 
     try:
-        reply = await generate_reply(event.body)
+        reply = await generate_reply(event.body, client=client, room=room, event=event)
 
         if not reply:
             return  # Nothing to send

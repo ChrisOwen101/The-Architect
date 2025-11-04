@@ -1,16 +1,58 @@
 """Claude Code CLI integration for generating command code."""
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import subprocess
 import os
-from typing import Optional
+from typing import Optional, Callable, Awaitable
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 # Maximum retry attempts for Claude Code CLI
 MAX_RETRIES = 3
+
+# Session storage for multi-turn conversations
+# Format: {command_name: session_id}
+_session_store: dict[str, str] = {}
+
+
+def save_session(command_name: str, session_id: str) -> None:
+    """
+    Save a session ID for a command (for multi-turn refinement).
+
+    Args:
+        command_name: Name of the command
+        session_id: Session ID from Claude Code CLI
+    """
+    _session_store[command_name] = session_id
+    logger.info(f"Saved session for command '{command_name}': {session_id}")
+
+
+def get_session(command_name: str) -> Optional[str]:
+    """
+    Get a stored session ID for a command.
+
+    Args:
+        command_name: Name of the command
+
+    Returns:
+        Session ID if exists, None otherwise
+    """
+    return _session_store.get(command_name)
+
+
+def clear_session(command_name: str) -> None:
+    """
+    Clear a stored session for a command.
+
+    Args:
+        command_name: Name of the command
+    """
+    if command_name in _session_store:
+        del _session_store[command_name]
+        logger.info(f"Cleared session for command '{command_name}'")
 
 
 def check_claude_cli_available() -> tuple[bool, Optional[str]]:
@@ -66,16 +108,20 @@ async def generate_command_code(
     api_key: str,  # Kept for backward compatibility, not used with CLI
     command_name: str,
     command_description: str,
-    model: str = "claude-sonnet-4-5-20250929"  # Kept for backward compatibility
+    model: str = "claude-sonnet-4-5-20250929",  # Kept for backward compatibility
+    status_callback: Optional[Callable[[str], Awaitable[None]]] = None,
+    resume_session: bool = False
 ) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """
-    Generate command code using Claude Code CLI.
+    Generate command code using Claude Code CLI in headless mode.
 
     Args:
         api_key: Not used (kept for backward compatibility)
         command_name: Name of the command to generate
         command_description: Description of what the command should do
         model: Not used (kept for backward compatibility)
+        status_callback: Optional async callback to send status updates
+        resume_session: If True, resume previous session for this command
 
     Returns:
         tuple: (command_code, test_code, error_message)
@@ -83,10 +129,18 @@ async def generate_command_code(
                - test_code: Generated test code for the command (read from file)
                - error_message: Error message if generation failed, None otherwise
     """
+    # Helper to send status updates
+    async def _send_status(message: str) -> None:
+        logger.info(message)
+        if status_callback:
+            await status_callback(message)
+
     # Check if Claude CLI is available
     is_available, error = check_claude_cli_available()
     if not is_available:
         return None, None, error
+
+    await _send_status(f"Generating command '{command_name}'...")
 
     # Get the bot root directory
     bot_root = Path(__file__).parent.parent.absolute()
@@ -136,6 +190,8 @@ async def {command_name}_handler(body: str) -> Optional[str]:
 - Test function names should be descriptive (e.g., `test_{command_name}_success`)
 - Each test should call the handler function and assert the response
 
+**Escalate** to the user 
+
 Please create both files now. Make sure to handle edge cases gracefully and keep the code simple and focused."""
 
     for attempt in range(MAX_RETRIES):
@@ -149,15 +205,26 @@ Please create both files now. Make sure to handle edge cases gracefully and keep
             if test_file.exists():
                 test_file.unlink()
 
-            # Invoke Claude Code CLI with auto-accept (async subprocess)
+            # Build Claude CLI command with headless mode
+            cmd = ['claude', '-p', prompt, '--output-format',
+                   'json', '--dangerously-skip-permissions']
+
+            # Resume previous session if requested
+            if resume_session:
+                session_id = get_session(command_name)
+                if session_id:
+                    cmd.extend(['--resume', session_id])
+                    await _send_status(f"Resuming previous session for '{command_name}'...")
+
+            # Invoke Claude Code CLI in headless mode (async subprocess)
             process = await asyncio.create_subprocess_exec(
-                'claude', '--dangerously-skip-permissions', prompt,
+                *cmd,
                 cwd=str(bot_root),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
 
-            # Read output streams concurrently for real-time logging
+            # Read output streams concurrently
             stdout_lines = []
             stderr_lines = []
 
@@ -180,11 +247,33 @@ Please create both files now. Make sure to handle edge cases gracefully and keep
                 await process.wait()
                 raise subprocess.TimeoutExpired('claude', 120)
 
-            # Log full output at debug level for reference
-            if stdout:
-                logger.debug(f"Claude Code CLI complete stdout:\n{stdout}")
-            if stderr:
-                logger.debug(f"Claude Code CLI complete stderr:\n{stderr}")
+            # Parse JSON response
+            try:
+                response = json.loads(stdout)
+                session_id = response.get('session_id')
+                is_error = response.get('is_error', False)
+                result_text = response.get('result', '')
+
+                # Save session ID for future refinements
+                if session_id:
+                    save_session(command_name, session_id)
+
+                if is_error:
+                    error_msg = f"Claude Code CLI returned error: {result_text}"
+                    logger.warning(
+                        f"Attempt {attempt + 1} failed: {error_msg}")
+                    if attempt == MAX_RETRIES - 1:
+                        return None, None, error_msg
+                    continue
+
+                logger.debug(f"Claude Code CLI response: {result_text}")
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse JSON response: {e}")
+                logger.debug(f"Raw stdout: {stdout}")
+                # Continue with file checking logic anyway
+                pass
+
+            await _send_status("Checking generated files...")
 
             # Poll for file existence (Claude CLI may spawn bg processes or delay writes)
             poll_timeout = 120  # seconds
@@ -205,6 +294,8 @@ Please create both files now. Make sure to handle edge cases gracefully and keep
                     return None, None, f"Failed to generate command file after {MAX_RETRIES} attempts. Claude Code output: {stdout}"
                 continue
 
+            await _send_status("Reading generated command code...")
+
             # Read the generated command code
             command_code = command_file.read_text()
             logger.info(f"Successfully generated command file: {command_file}")
@@ -217,6 +308,7 @@ Please create both files now. Make sure to handle edge cases gracefully and keep
             else:
                 logger.warning(
                     f"Test file not created, using fallback template")
+                await _send_status("Creating fallback test file...")
                 # Create a basic test template as fallback
                 test_code = f"""import pytest
 from bot.commands.{command_name} import {command_name}_handler
@@ -232,6 +324,7 @@ async def test_{command_name}_basic():
                 test_file.parent.mkdir(parents=True, exist_ok=True)
                 test_file.write_text(test_code)
 
+            await _send_status(f"Successfully generated code for command '{command_name}'")
             logger.info(
                 f"Successfully generated code for command '{command_name}'")
             return command_code, test_code, None

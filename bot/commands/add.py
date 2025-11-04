@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 from . import command
 from ..claude_integration import generate_command_code
 from ..code_validator import validate_command_code, validate_test_code
@@ -18,13 +18,58 @@ logger = logging.getLogger(__name__)
     description="Add a new command using AI (usage: !add -n <name> -d \"<description>\")",
     pattern=r"^!add\s+"
 )
-async def add_handler(body: str) -> Optional[str]:
+async def add_handler(body: str, matrix_context: Optional[dict[str, Any]] = None) -> Optional[str]:
     """
     Add a new command using Claude AI to generate the code.
 
     Usage: !add -n <command_name> -d "<description>"
     Example: !add -n calculate -d "Calculate mathematical expressions"
+
+    Args:
+        body: The command message body
+        matrix_context: Optional Matrix context containing client, room, event
     """
+    # Extract Matrix components for sending status updates
+    client = None
+    room = None
+    event = None
+    if matrix_context:
+        client = matrix_context.get('client')
+        room = matrix_context.get('room')
+        event = matrix_context.get('event')
+
+    # Helper to send status updates to the user
+    async def send_status(message: str) -> None:
+        """Send a status update message to the user."""
+        if not (client and room and event):
+            return
+
+        try:
+            # Determine thread root (same logic as in handlers.py)
+            thread_root = event.event_id
+            if hasattr(event, 'source') and isinstance(event.source, dict):
+                relates_to = event.source.get('content', {}).get('m.relates_to', {})
+                if relates_to.get('rel_type') == 'm.thread':
+                    thread_root = relates_to.get('event_id', event.event_id)
+
+            await client.room_send(
+                room_id=room.room_id,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.text",
+                    "body": message,
+                    "m.relates_to": {
+                        "rel_type": "m.thread",
+                        "event_id": thread_root,
+                        "is_falling_back": True,
+                        "m.in_reply_to": {"event_id": event.event_id}
+                    },
+                },
+            )
+            logger.debug(f"Status update sent: {message}")
+        except Exception as e:
+            logger.warning(f"Failed to send status update: {e}")
+            # Don't fail the command if status update fails
     # Parse arguments
     name_match = re.search(r'-n\s+(\w+)', body)
     desc_match = re.search(r'-d\s+"([^"]+)"', body)
@@ -70,12 +115,15 @@ async def add_handler(body: str) -> Optional[str]:
         command_code, test_code, error = await generate_command_code(
             api_key=api_key,  # Not used with CLI
             command_name=command_name,
-            command_description=command_description
+            command_description=command_description,
+            status_callback=send_status  # Pass callback for periodic updates
         )
 
         if error or not command_code:
             logger.error(f"Failed to generate command code: {error}")
             return f"Failed to generate command using Claude Code CLI: {error}"
+
+        await send_status("Validating generated code...")
 
         # Validate generated code
         is_valid, validation_error = validate_command_code(command_code, command_name)
@@ -89,6 +137,8 @@ async def add_handler(body: str) -> Optional[str]:
             if not is_valid:
                 logger.warning(f"Generated test code validation failed: {validation_error}")
                 test_code = None  # Skip test if invalid
+
+        await send_status("Code validated successfully!")
 
         # Note: Files are already written by Claude Code CLI
         # We just need to track them for git commit
@@ -106,6 +156,7 @@ async def add_handler(body: str) -> Optional[str]:
 
         # Commit to git if enabled
         if enable_auto_commit:
+            await send_status("Committing to git...")
             success, commit_error = git_commit(
                 files_to_commit,
                 f"Add command: {command_name}\n\nDescription: {command_description}"
@@ -121,6 +172,8 @@ async def add_handler(body: str) -> Optional[str]:
         # Schedule bot restart
         import asyncio
         asyncio.create_task(_delayed_restart())
+
+        await send_status(f"Command '{command_name}' added successfully! Bot restarting...")
 
         return (
             f"Command '{command_name}' created successfully!\n"
