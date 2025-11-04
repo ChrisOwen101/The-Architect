@@ -1,44 +1,32 @@
 """Bot reload mechanism for applying code changes."""
 from __future__ import annotations
-import os
-import sys
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-def restart_bot() -> None:
+def reload_commands() -> None:
     """
-    Restart the bot process.
+    Hot reload all command modules without restarting the bot process.
 
-    This uses os.execv() to replace the current process with a new one,
-    maintaining the same process ID and ensuring a clean restart.
-
-    Always restarts using the module format (python -m bot.main) to avoid
-    relative import errors.
+    This uses Python's importlib to reload command modules dynamically,
+    allowing the bot to continue running and processing the current request.
+    The command registry is cleared and all modules are reloaded, ensuring
+    that new or modified commands are immediately available.
     """
-    logger.info("Restarting bot...")
+    logger.info("Hot reloading commands...")
 
     try:
-        # Get the Python executable
-        python = sys.executable
+        # Import the load_commands function from the command registry
+        from bot.commands import load_commands
 
-        # Always use module format to avoid relative import errors
-        # This ensures 'python -m bot.main' format regardless of how bot was started
-        args = [python, '-m', 'bot.main']
+        # Reload all command modules
+        # This clears the registry and reloads each module using importlib.reload()
+        load_commands()
 
-        # Preserve any command-line arguments after the script name
-        # (skip sys.argv[0] which is the script name)
-        if len(sys.argv) > 1:
-            args.extend(sys.argv[1:])
-
-        # Close file descriptors to avoid issues
-        # (nio client should be closed before this is called)
-
-        # Replace the current process with a new one
-        os.execv(python, args)
+        logger.info("Commands reloaded successfully")
 
     except Exception as e:
-        logger.exception(f"Failed to restart bot: {e}")
-        # If restart fails, we should at least try to continue running
-        raise RuntimeError(f"Bot restart failed: {e}")
+        logger.exception(f"Failed to reload commands: {e}")
+        # If reload fails, the bot continues with old commands
+        raise RuntimeError(f"Command reload failed: {e}")

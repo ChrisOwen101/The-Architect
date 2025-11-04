@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_MODEL = "gpt-5"
 MAX_CONTEXT_MESSAGES = 50
-API_TIMEOUT = 180  # seconds
+API_TIMEOUT = 600  # seconds
 MAX_FUNCTION_CALL_ITERATIONS = 20  # Prevent infinite loops
 
 # The Architect system prompt
@@ -357,7 +357,8 @@ async def generate_ai_reply(
                 # Build user-friendly notification message
                 tool_descriptions = []
                 for tool_call in tool_calls:
-                    function_name = tool_call.get('function', {}).get('name', 'unknown')
+                    function_name = tool_call.get(
+                        'function', {}).get('name', 'unknown')
                     # Get friendly name or use generic description
                     friendly_name = FUNCTION_FRIENDLY_NAMES.get(
                         function_name,
@@ -369,7 +370,8 @@ async def generate_ai_reply(
                 if len(tool_descriptions) == 1:
                     notification = f"Let me help with that... {tool_descriptions[0]}..."
                 else:
-                    tools_list = "\n".join(f"- {desc}" for desc in tool_descriptions)
+                    tools_list = "\n".join(
+                        f"- {desc}" for desc in tool_descriptions)
                     notification = f"Let me help with that...\n{tools_list}"
 
                 await send_status_message(client, room, event, notification, thread_root_id)
@@ -379,13 +381,6 @@ async def generate_ai_reply(
 
                 # Execute the functions
                 tool_results = await execute_functions(tool_calls, matrix_context)
-
-                # Send completion notification
-                await send_status_message(
-                    client, room, event,
-                    "Done! Let me process those results...",
-                    thread_root_id
-                )
 
                 # Add tool results to conversation
                 messages.extend(tool_results)

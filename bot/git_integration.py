@@ -35,7 +35,7 @@ def git_commit(file_paths: list[str], commit_message: str) -> tuple[bool, Option
         # Stage the files
         for file_path in file_paths:
             result = subprocess.run(
-                ["git", "add", file_path],
+                ["git", "add", "."],
                 capture_output=True,
                 text=True,
                 check=False

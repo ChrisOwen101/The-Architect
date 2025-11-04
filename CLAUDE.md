@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**The Architect** - A self-modifying Matrix bot using `matrix-nio` and Claude Code CLI. The bot can dynamically generate and add new commands to itself using natural language descriptions. Users mention the bot and describe what they want (e.g., "@architect add a command called foo that does bar"), and the bot uses OpenAI function calling with Claude Code CLI to generate code, validates it, commits to git, and restarts to load the new command. All commands are invoked via natural language mentions and processed through OpenAI GPT-5 function calling. Architecture prioritizes safety, modularity, and extensibility.
+**The Architect** - A self-modifying Matrix bot using `matrix-nio` and Claude Code CLI. The bot can dynamically generate and add new commands to itself using natural language descriptions. Users mention the bot and describe what they want (e.g., "@architect add a command called foo that does bar"), and the bot uses OpenAI function calling with Claude Code CLI to generate code, validates it, commits to git, and hot reloads commands without stopping. All commands are invoked via natural language mentions and processed through OpenAI GPT-5 function calling. Architecture prioritizes safety, modularity, and extensibility.
 
 ## Development Commands
 
@@ -101,10 +101,11 @@ pytest tests/test_handlers.py -v
 - Uses subprocess to call git commands
 - Returns (success, error_message) tuple
 
-**bot/reload.py** - Bot restart mechanism
-- `restart_bot()`: Uses `os.execv()` to replace process with fresh instance
-- Maintains same PID and arguments
+**bot/reload.py** - Command hot reload mechanism
+- `reload_commands()`: Dynamically reloads command modules using `importlib.reload()`
+- Keeps bot running without process restart
 - Called after successful command add/remove operations
+- Allows current requests to continue processing
 
 **bot/openai_integration.py** - OpenAI GPT-5 integration for conversational AI
 - `is_bot_mentioned()`: Detects if bot's user_id appears in message body or formatted_body
@@ -122,13 +123,13 @@ pytest tests/test_handlers.py -v
 
 2. **Natural language invocation**: All commands are invoked by mentioning the bot with natural language (e.g., "@architect list commands", "@architect add a dice roller"). OpenAI GPT-5 function calling interprets user intent and maps to appropriate command with structured parameters.
 
-3. **Self-modifying capability**: `add` command uses OpenAI function calling + Claude Code CLI to generate new command code. Claude Code writes files directly, code is validated, committed to git, and bot restarts to load it.
+3. **Self-modifying capability**: `add` command uses OpenAI function calling + Claude Code CLI to generate new command code. Claude Code writes files directly, code is validated, committed to git, and commands are hot reloaded without stopping the bot.
 
 4. **Safety-first validation**: All generated code goes through AST parsing, dangerous operation detection, and compilation checks before execution.
 
 5. **Git integration**: All code changes are automatically committed (if `enable_auto_commit` is true) for version control and rollback capability.
 
-6. **Process restart over hot reload**: Bot uses `os.execv()` for clean restart rather than module reloading to avoid stale state issues.
+6. **Hot reload with importlib**: Bot uses Python's `importlib.reload()` to dynamically reload command modules without process restart, keeping the bot running and allowing current requests to complete.
 
 7. **Token injection pattern**: Uses pre-issued access tokens (Matrix + OpenAI) rather than password login. The `client.user_id` must be set manually when injecting tokens (handled in `login_if_needed` at bot/main.py:42).
 
@@ -144,14 +145,16 @@ pytest tests/test_handlers.py -v
 
 ### Adding New Commands (Two Methods)
 
-**Method 1: Using /add (recommended for bot users)**
+**Method 1: Using natural language (recommended for bot users)**
 ```
-/add -n mycommand -d "Description of what the command does"
+@architect add a command called mycommand that does [description]
 ```
-The bot will generate, validate, and install the command automatically.
+The bot will generate, validate, and install the command automatically using OpenAI function calling.
 
 **Method 2: Manual creation (for developers)**
 Create `bot/commands/mycommand.py`:
+
+**For commands with parameters:**
 ```python
 from __future__ import annotations
 from typing import Optional
@@ -160,14 +163,29 @@ from . import command
 @command(
     name="mycommand",
     description="What this command does",
-    pattern=r"^/mycommand\s*(.*)$"
+    params=[
+        ("param1", str, "Description of param1", True),
+        ("param2", int, "Description of param2", False)
+    ]
 )
-async def mycommand_handler(body: str) -> Optional[str]:
+async def mycommand_handler(param1: str, param2: int = 0, matrix_context: Optional[dict] = None) -> Optional[str]:
     """Implementation here."""
-    # Parse body, perform logic
+    # param1 and param2 are already parsed and typed
+    return f"Response: {param1}, {param2}"
+```
+
+**For parameterless commands:**
+```python
+@command(
+    name="mycommand",
+    description="What this command does"
+)
+async def mycommand_handler(matrix_context: Optional[dict] = None) -> Optional[str]:
+    """Implementation here."""
     return "Response"
 ```
-Add tests in `tests/commands/test_mycommand.py`. Restart bot to load.
+
+Add tests in `tests/commands/test_mycommand.py`. Commands are hot reloaded automatically when added/removed, or you can manually trigger a reload by restarting the bot.
 
 ### Testing Patterns
 - Use pytest with pytest-asyncio for async tests
@@ -180,29 +198,31 @@ Add tests in `tests/commands/test_mycommand.py`. Restart bot to load.
 - **Never log or print tokens**: Matrix access token and OpenAI API key are sensitive
 - **All secrets from environment**: Load via `.env` file, never hardcode
 - **Claude Code CLI auth**: Uses its own authentication system (separate from bot)
-- **OpenAI API key**: Required for AI mention responses, stored in `.env` as `OPENAI_API_KEY`
+- **OpenAI API key**: Required for all bot interactions (mention-based commands and AI responses)
 - **Code validation**: All generated code goes through AST validation to block dangerous operations
-- **Protected commands**: Core meta-commands (add, remove, list) cannot be removed
+- **Command protection**: Core meta-commands (add, remove, list) are protected from removal in code
 - **Git tracking**: All code changes are version controlled for audit trail
 - **CLI requirements**: Claude Code CLI must be installed and authenticated separately
+- **Type safety**: Structured parameters prevent injection attacks common in string-based command parsing
 
 ### Extension Points
 - **Command permissions**: Add user-based permission checks in meta-commands (currently anyone in allowed rooms can add/remove)
-- **Command categories**: Extend registry to support command grouping/categories
-- **Rate limiting**: Add rate limits on /add to prevent API abuse
+- **Command categories**: Extend registry to support command grouping/categories via additional metadata
+- **Rate limiting**: Add rate limits on add command to prevent API abuse
 - **Command versioning**: Track command versions in registry for rollback capability
 - **Persistence**: Add `SqliteStore` to persist sync tokens and avoid processing missed events
 - **Approval workflow**: Add manual approval step before executing generated code
+- **Parameter validation**: Add custom validators for parameter types beyond basic type checking
 
 ## Important Gotchas
 
 1. **Manual user_id assignment**: When injecting access token, must manually set `client.user_id` (see bot/main.py:42). The nio library doesn't populate this automatically.
 
-2. **Bot restart required**: After adding/removing commands, bot must restart to load changes. This is handled automatically but means brief downtime.
+2. **Command reload**: After adding/removing commands, commands are hot reloaded automatically using `importlib.reload()`. The bot stays running with no downtime, and current requests continue processing.
 
-3. **Command name collisions**: If a command already exists, `/add` will fail. Use `/remove` first to replace.
+3. **Command name collisions**: If a command already exists, the add command will fail. Ask the bot to remove it first to replace.
 
-4. **Delayed restart**: Commands use `asyncio.create_task(_delayed_restart())` to allow response message to send before restarting (2 second delay).
+4. **Delayed reload**: Commands use `asyncio.create_task(_delayed_reload())` to allow response message to send before reloading (1 second delay). This ensures the user sees the success message before the reload happens.
 
 5. **Timestamp filtering**: The `START_TIME_MS` and `HISTORICAL_SKEW_MS` constants prevent historical replies. Modifying these affects first-sync behavior.
 
@@ -212,7 +232,7 @@ Add tests in `tests/commands/test_mycommand.py`. Restart bot to load.
 
 8. **Test generation**: Tests are auto-generated but may not be comprehensive. Review and enhance them as needed.
 
-9. **Claude Code CLI requirement**: The `!add` command requires Claude Code CLI to be installed and authenticated. Without it, command generation will fail with a helpful error message.
+9. **Claude Code CLI requirement**: The add command requires Claude Code CLI to be installed and authenticated. Without it, command generation will fail with a helpful error message.
 
 10. **CLI timeout**: Claude Code CLI invocations have a 2-minute timeout. Complex commands may need adjustment of this timeout in `bot/claude_integration.py`.
 
@@ -220,8 +240,12 @@ Add tests in `tests/commands/test_mycommand.py`. Restart bot to load.
 
 12. **Thread-based replies**: All bot replies are sent as threaded messages using Matrix's threading feature. This means responses appear in a thread rooted at the user's original message. Commands should not override this behavior unless there's a specific reason to do so.
 
-13. **OpenAI API key requirement**: The mention-based AI responses require a valid OpenAI API key in the `.env` file. Without it, the bot will raise a RuntimeError on startup when config is loaded. If you don't want AI responses, you can comment out the mention detection logic in `bot/handlers.py` or simply don't mention the bot outside of commands.
+13. **OpenAI API key requirement**: All bot interactions require a valid OpenAI API key in the `.env` file. Without it, the bot will raise a RuntimeError on startup when config is loaded. The bot must be mentioned to respond.
 
-14. **Thread context limitations**: The bot fetches up to 50 messages from a thread for AI context. For very long threads, earlier messages will be truncated. The `matrix-nio` library doesn't have native thread API support, so the bot filters messages manually by checking `m.relates_to` fields.
+14. **Mention required**: The bot will only respond to messages that mention it (contain its user_id). This prevents accidental invocations and reduces API costs.
 
-15. **Self-message filtering**: The bot now filters out its own messages to prevent infinite loops. This is critical for the AI response feature, as the bot would otherwise respond to its own AI-generated messages.
+15. **Thread context limitations**: The bot fetches up to 50 messages from a thread for AI context. For very long threads, earlier messages will be truncated. The `matrix-nio` library doesn't have native thread API support, so the bot filters messages manually by checking `m.relates_to` fields.
+
+16. **Self-message filtering**: The bot filters out its own messages to prevent infinite loops. This is critical for the AI response feature, as the bot would otherwise respond to its own AI-generated messages.
+
+17. **Parameter types**: Handler function signatures must match the params defined in @command decorator. The params define (name, type, description, required), and the handler must accept those parameters with matching names and types.

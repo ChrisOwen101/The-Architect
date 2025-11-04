@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 from . import command, get_registry
 from ..git_integration import git_remove
-from ..reload import restart_bot
+from ..reload import reload_commands
 
 logger = logging.getLogger(__name__)
 
@@ -78,16 +78,16 @@ async def remove_handler(command_name: str, matrix_context: Optional[dict] = Non
     # Unregister from registry
     registry.unregister(command_name)
 
-    # Schedule bot restart (will happen after this message is sent)
+    # Schedule command reload (will happen after this message is sent)
     # We need to do this in a way that doesn't interrupt the message send
     import asyncio
-    asyncio.create_task(_delayed_restart())
+    asyncio.create_task(_delayed_reload())
 
-    return f"Command '{command_name}' removed successfully. Bot will restart shortly to apply changes."
+    return f"Command '{command_name}' removed successfully. Commands are being reloaded."
 
 
-async def _delayed_restart():
-    """Restart the bot after a short delay to allow message to be sent."""
+async def _delayed_reload():
+    """Reload commands after a short delay to allow message to be sent."""
     import asyncio
-    await asyncio.sleep(2)  # Wait 2 seconds for message to be sent
-    restart_bot()
+    await asyncio.sleep(1)  # Wait 1 second for message to be sent
+    reload_commands()

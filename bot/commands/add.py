@@ -8,14 +8,14 @@ from . import command
 from ..claude_integration import generate_command_code
 from ..code_validator import validate_command_code, validate_test_code
 from ..git_integration import git_commit
-from ..reload import restart_bot
+from ..reload import reload_commands
 
 logger = logging.getLogger(__name__)
 
 
 @command(
     name="add",
-    description="Add new functionality/tools to the bot",
+    description="Add new functionality/tools to the bot. Used when requested or when you need to extend capabilities proactively to achieve what a user wants if you can't do it with existing commands.",
     params=[
         ("command_name", str, "Name of the new command (alphanumeric, lowercase)", True),
         ("description", str, "Description of what the command does", True)
@@ -160,19 +160,19 @@ async def add_handler(command_name: str, description: str, matrix_context: Optio
                 # Don't fail the command, just warn
                 return (
                     f"Command '{command_name}' created successfully but git commit failed: {commit_error}\n"
-                    "Bot will restart shortly to apply changes."
+                    "Commands will be reloaded shortly to apply changes."
                 )
 
-        # Schedule bot restart
+        # Schedule command reload
         import asyncio
-        asyncio.create_task(_delayed_restart())
+        asyncio.create_task(_delayed_reload())
 
-        await send_status(f"Command '{command_name}' added successfully! Bot restarting...")
+        await send_status(f"Command '{command_name}' added successfully! Reloading commands...")
 
         return (
             f"Command '{command_name}' created successfully!\n"
             f"Description: {command_description}\n"
-            f"Bot will restart in 2 seconds to load the new command."
+            f"Commands are being reloaded. The new command is now available!"
         )
 
     except Exception as e:
@@ -183,8 +183,8 @@ async def add_handler(command_name: str, description: str, matrix_context: Optio
         return f"Error creating command: {e}"
 
 
-async def _delayed_restart():
-    """Restart the bot after a short delay to allow message to be sent."""
+async def _delayed_reload():
+    """Reload commands after a short delay to allow message to be sent."""
     import asyncio
-    await asyncio.sleep(2)  # Wait 2 seconds for message to be sent
-    restart_bot()
+    await asyncio.sleep(1)  # Wait 1 second for message to be sent
+    reload_commands()

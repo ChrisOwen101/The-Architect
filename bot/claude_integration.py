@@ -251,7 +251,7 @@ Please create both files now. Make sure to handle edge cases gracefully and keep
                                      "Claude CLI [stderr]", stderr_lines),
                         process.wait()
                     ),
-                    timeout=120  # 2 minutes timeout for code generation
+                    timeout=500  # 2 minutes timeout for code generation
                 )
                 stdout = '\n'.join(stdout_lines)
                 stderr = '\n'.join(stderr_lines)
