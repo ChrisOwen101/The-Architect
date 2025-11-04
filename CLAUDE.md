@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**The Architect** - A self-modifying Matrix bot using `matrix-nio` and Claude AI. The bot can dynamically generate and add new commands to itself using natural language descriptions. Users send `/add -n <name> -d "<description>"` and the bot generates code, validates it, saves it, commits to git, and restarts to load the new command. Architecture prioritizes safety, modularity, and extensibility.
+**The Architect** - A self-modifying Matrix bot using `matrix-nio` and Claude Code CLI. The bot can dynamically generate and add new commands to itself using natural language descriptions. Users send `!add -n <name> -d "<description>"` and the bot uses Claude Code CLI to generate code, validates it, commits to git, and restarts to load the new command. Architecture prioritizes safety, modularity, and extensibility.
 
 ## Development Commands
 
@@ -17,11 +17,14 @@ source .venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
+# Install Claude Code CLI (required for /add command)
+# Visit: https://docs.claude.com/claude-code
+
 # Copy example config and edit
 cp config.example.toml config.toml
-# Create .env file with both tokens:
+# Create .env file with Matrix token:
 # MATRIX_ACCESS_TOKEN="syt_xxx"
-# ANTHROPIC_API_KEY="sk-ant-xxx"
+# Note: ANTHROPIC_API_KEY no longer needed (Claude Code CLI uses its own auth)
 ```
 
 ### Running
@@ -48,7 +51,8 @@ pytest tests/test_handlers.py -v
 
 **bot/config.py** - Configuration management
 - Loads and validates `config.toml` using `tomllib` (Python 3.11+) or `tomli` fallback
-- Exposes `BotConfig.access_token` and `BotConfig.anthropic_api_key` from environment (loaded from `.env`)
+- Exposes `BotConfig.access_token` from environment (loaded from `.env`)
+- Note: `anthropic_api_key` field still exists for backward compatibility but is no longer required
 - Fails fast if required config keys are missing
 - Config keys: `homeserver`, `user_id`, `device_id`, `display_name`, `log_level`, `allowed_rooms`, `enable_auto_commit`
 
@@ -61,7 +65,7 @@ pytest tests/test_handlers.py -v
 **bot/handlers.py** - Message handling
 - `generate_reply(body)`: Now delegates to command registry via `execute_command()`
 - `on_message(client, room, event)`: Event handler that filters messages and sends replies as threaded messages
-- Threading: Uses `rel_type: "m.thread"` to create thread replies rooted at the original message, with `m.in_reply_to` fallback
+- Threading: Intelligently determines thread root by checking if incoming event is already in a thread, then uses `rel_type: "m.thread"` to ensure all replies stay in the same thread. Includes `m.in_reply_to` fallback for non-thread-aware clients
 - Timestamp filtering: Ignores historical events with `server_timestamp < START_TIME_MS - HISTORICAL_SKEW_MS` (5s skew)
 - Room filtering: Uses `_config.allowed_rooms` from config.toml (set via `set_config()`)
 
@@ -71,11 +75,13 @@ pytest tests/test_handlers.py -v
 - Sync loop with basic retry (5s sleep on exception)
 - Signal handlers for graceful shutdown on SIGINT/SIGTERM (sets `STOP` event)
 
-**bot/claude_integration.py** - Claude API client
-- `generate_command_code()`: Calls Claude API to generate command code and tests
-- Retry logic: Up to 3 attempts with exponential backoff
-- Strips markdown code blocks from responses
-- Returns tuple: (command_code, test_code, error_message)
+**bot/claude_integration.py** - Claude Code CLI integration
+- `generate_command_code()`: Invokes Claude Code CLI to generate and write command code and tests
+- `check_claude_cli_available()`: Verifies Claude Code CLI is installed and accessible
+- Uses `subprocess` to call `claude --auto-accept <prompt>` with working directory set to bot root
+- Claude Code writes files directly to `bot/commands/` and `tests/commands/`
+- Retry logic: Up to 3 attempts if files aren't created successfully
+- Returns tuple: (command_code, test_code, error_message) by reading generated files
 
 **bot/code_validator.py** - Code safety validation
 - `validate_command_code()`: AST parsing, dangerous operation detection, structure validation
@@ -98,7 +104,7 @@ pytest tests/test_handlers.py -v
 
 1. **Dynamic command system**: Commands are individual Python modules in `bot/commands/`. Each uses `@command` decorator for registration. Registry auto-loads on startup.
 
-2. **Self-modifying capability**: `/add` command uses Claude API to generate new command code. Code is validated, saved, committed to git, and bot restarts to load it.
+2. **Self-modifying capability**: `!add` command uses Claude Code CLI to generate new command code. Claude Code writes files directly, code is validated, committed to git, and bot restarts to load it.
 
 3. **Safety-first validation**: All generated code goes through AST parsing, dangerous operation detection, and compilation checks before execution.
 
@@ -112,7 +118,7 @@ pytest tests/test_handlers.py -v
 
 8. **Config-based room allowlist**: Room filtering now uses `allowed_rooms` from config.toml rather than hardcoded values.
 
-9. **Thread-based replies**: Bot replies are sent as threaded messages using Matrix's `m.thread` relation type. This keeps conversations organized in threads rather than as direct replies. The `m.in_reply_to` fallback is included for clients that don't support threads.
+9. **Thread-based replies**: Bot replies are sent as threaded messages using Matrix's `m.thread` relation type. The bot intelligently detects if an incoming message is already part of a thread and replies to the same thread root, keeping entire conversations organized together. The `m.in_reply_to` fallback is included for clients that don't support threads.
 
 ## Development Patterns
 
@@ -151,11 +157,13 @@ Add tests in `tests/commands/test_mycommand.py`. Restart bot to load.
 - Core system tests in `tests/test_*.py`
 
 ### Security
-- **Never log or print API keys**: Both Matrix and Anthropic tokens are sensitive
+- **Never log or print tokens**: Matrix access token is sensitive
 - **All secrets from environment**: Load via `.env` file, never hardcode
+- **Claude Code CLI auth**: Uses its own authentication system (separate from bot)
 - **Code validation**: All generated code goes through AST validation to block dangerous operations
 - **Protected commands**: Core meta-commands (add, remove, list) cannot be removed
 - **Git tracking**: All code changes are version controlled for audit trail
+- **CLI requirements**: Claude Code CLI must be installed and authenticated separately
 
 ### Extension Points
 - **Command permissions**: Add user-based permission checks in meta-commands (currently anyone in allowed rooms can add/remove)
@@ -183,8 +191,10 @@ Add tests in `tests/commands/test_mycommand.py`. Restart bot to load.
 
 8. **Test generation**: Tests are auto-generated but may not be comprehensive. Review and enhance them as needed.
 
-9. **API rate limits**: Claude API has rate limits. High-frequency `/add` usage could hit limits.
+9. **Claude Code CLI requirement**: The `!add` command requires Claude Code CLI to be installed and authenticated. Without it, command generation will fail with a helpful error message.
 
-10. **Command loading order**: Commands are loaded alphabetically by filename. If order matters, use numeric prefixes (e.g., `01_base.py`, `02_advanced.py`).
+10. **CLI timeout**: Claude Code CLI invocations have a 2-minute timeout. Complex commands may need adjustment of this timeout in `bot/claude_integration.py`.
 
-11. **Thread-based replies**: All bot replies are sent as threaded messages using Matrix's threading feature. This means responses appear in a thread rooted at the user's original message. Commands should not override this behavior unless there's a specific reason to do so.
+11. **Command loading order**: Commands are loaded alphabetically by filename. If order matters, use numeric prefixes (e.g., `01_base.py`, `02_advanced.py`).
+
+12. **Thread-based replies**: All bot replies are sent as threaded messages using Matrix's threading feature. This means responses appear in a thread rooted at the user's original message. Commands should not override this behavior unless there's a specific reason to do so.

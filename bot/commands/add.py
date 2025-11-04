@@ -53,30 +53,29 @@ async def add_handler(body: str) -> Optional[str]:
     from ..config import load_config
     try:
         cfg = load_config()
-        api_key = cfg.anthropic_api_key
+        # Note: api_key not needed for Claude Code CLI (uses its own auth)
+        api_key = None  # Passed for backward compatibility
         enable_auto_commit = cfg.enable_auto_commit
     except Exception as e:
         logger.exception("Failed to load config")
         return f"Configuration error: {e}"
 
-    # Generate code using Claude
-    logger.info(f"Generating code for command '{command_name}'")
-    status_msg = f"Generating code for command '{command_name}'... This may take a moment."
+    # Generate code using Claude Code CLI
+    logger.info(f"Generating code for command '{command_name}' using Claude Code CLI")
 
-    # Note: We return early status message since generation takes time
-    # In a production system, you might want to use a background task
-    # For now, we'll generate synchronously
+    # Note: Claude Code CLI will write files directly to bot/commands/ and tests/commands/
+    # We'll validate the generated files after they're created
 
     try:
         command_code, test_code, error = await generate_command_code(
-            api_key=api_key,
+            api_key=api_key,  # Not used with CLI
             command_name=command_name,
             command_description=command_description
         )
 
         if error or not command_code:
             logger.error(f"Failed to generate command code: {error}")
-            return f"Failed to generate command: {error}"
+            return f"Failed to generate command using Claude Code CLI: {error}"
 
         # Validate generated code
         is_valid, validation_error = validate_command_code(command_code, command_name)
@@ -91,27 +90,18 @@ async def add_handler(body: str) -> Optional[str]:
                 logger.warning(f"Generated test code validation failed: {validation_error}")
                 test_code = None  # Skip test if invalid
 
-        # Create tests directory if it doesn't exist
-        test_dir = Path("tests/commands")
-        test_dir.mkdir(parents=True, exist_ok=True)
-
-        # Write command file
-        command_file.write_text(command_code)
-        logger.info(f"Written command file: {command_file}")
-
+        # Note: Files are already written by Claude Code CLI
+        # We just need to track them for git commit
         files_to_commit = [str(command_file)]
 
-        # Write test file if we have valid test code
-        if test_code:
-            test_file = Path(f"tests/commands/test_{command_name}.py")
-            test_file.write_text(test_code)
-            logger.info(f"Written test file: {test_file}")
+        test_file = Path(f"tests/commands/test_{command_name}.py")
+        if test_file.exists():
             files_to_commit.append(str(test_file))
+            logger.info(f"Test file created: {test_file}")
 
-        # Create __init__.py in tests/commands if it doesn't exist
-        test_init = test_dir / "__init__.py"
-        if not test_init.exists():
-            test_init.write_text("")
+        # Check if __init__.py exists in tests/commands
+        test_init = Path("tests/commands/__init__.py")
+        if test_init.exists():
             files_to_commit.append(str(test_init))
 
         # Commit to git if enabled

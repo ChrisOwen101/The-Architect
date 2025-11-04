@@ -13,13 +13,24 @@ def restart_bot() -> None:
 
     This uses os.execv() to replace the current process with a new one,
     maintaining the same process ID and ensuring a clean restart.
+
+    Always restarts using the module format (python -m bot.main) to avoid
+    relative import errors.
     """
     logger.info("Restarting bot...")
 
     try:
-        # Get the Python executable and original arguments
+        # Get the Python executable
         python = sys.executable
-        args = [python] + sys.argv
+
+        # Always use module format to avoid relative import errors
+        # This ensures 'python -m bot.main' format regardless of how bot was started
+        args = [python, '-m', 'bot.main']
+
+        # Preserve any command-line arguments after the script name
+        # (skip sys.argv[0] which is the script name)
+        if len(sys.argv) > 1:
+            args.extend(sys.argv[1:])
 
         # Close file descriptors to avoid issues
         # (nio client should be closed before this is called)

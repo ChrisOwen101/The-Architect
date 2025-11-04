@@ -50,8 +50,18 @@ async def on_message(client: AsyncClient, room, event: RoomMessageText):
         if not reply:
             return  # Nothing to send
 
-        logger.info("Replying in %s to %s: %s",
-                    room.room_id, event.sender, reply)
+        # Determine the thread root for threading
+        # If the incoming event is already in a thread, use that thread root
+        # Otherwise, start a new thread with the current event as root
+        thread_root = event.event_id
+        if hasattr(event, 'source') and isinstance(event.source, dict):
+            relates_to = event.source.get('content', {}).get('m.relates_to', {})
+            if relates_to.get('rel_type') == 'm.thread':
+                # Event is part of an existing thread, use its root
+                thread_root = relates_to.get('event_id', event.event_id)
+
+        logger.info("Replying in %s to %s (thread root: %s): %s",
+                    room.room_id, event.sender, thread_root, reply)
         resp: RoomSendResponse = await client.room_send(
             room_id=room.room_id,
             message_type="m.room.message",
@@ -60,7 +70,7 @@ async def on_message(client: AsyncClient, room, event: RoomMessageText):
                 "body": reply,
                 "m.relates_to": {
                     "rel_type": "m.thread",
-                    "event_id": event.event_id,
+                    "event_id": thread_root,
                     "is_falling_back": True,
                     "m.in_reply_to": {"event_id": event.event_id}
                 },
