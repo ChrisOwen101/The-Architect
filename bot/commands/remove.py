@@ -52,9 +52,6 @@ async def remove_handler(command_name: str, matrix_context: Optional[dict] = Non
     except Exception:
         enable_auto_commit = False
 
-    # Remove files
-    files_to_commit = []
-
     # Remove command file
     if enable_auto_commit:
         success, error = git_remove(str(command_file), f"Remove command: {command_name}")

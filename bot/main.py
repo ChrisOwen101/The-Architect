@@ -67,6 +67,11 @@ async def run():
         except Exception:
             logger.warning("Could not set display name", exc_info=True)
 
+    # Start background cleanup task for expired pending questions
+    from .user_input_handler import start_cleanup_task
+    start_cleanup_task()
+    logger.info("Started user input handler cleanup task")
+
     logger.info("Starting sync loop")
 
     while not STOP.is_set():
@@ -79,6 +84,12 @@ async def run():
             await asyncio.sleep(5)
 
     logger.info("Shutting down")
+
+    # Stop background cleanup task
+    from .user_input_handler import stop_cleanup_task
+    stop_cleanup_task()
+    logger.info("Stopped user input handler cleanup task")
+
     await client.close()
 
 if __name__ == "__main__":

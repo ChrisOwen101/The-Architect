@@ -1,6 +1,6 @@
 from __future__ import annotations
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 from bot.function_executor import execute_function, execute_functions, FunctionExecutionError
 from bot.commands import CommandRegistry
 

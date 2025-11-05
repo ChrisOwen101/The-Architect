@@ -73,7 +73,7 @@ class CommandRegistry:
         return True
 
     async def execute(self, name: str, arguments: dict[str, Any],
-                     matrix_context: Optional[dict[str, Any]] = None) -> Optional[str]:
+                      matrix_context: Optional[dict[str, Any]] = None) -> Optional[str]:
         """Execute a command by name with structured arguments.
 
         Args:
@@ -255,7 +255,7 @@ def load_commands() -> None:
 
 
 async def execute_command(name: str, arguments: dict[str, Any],
-                         matrix_context: Optional[dict[str, Any]] = None) -> Optional[str]:
+                          matrix_context: Optional[dict[str, Any]] = None) -> Optional[str]:
     """Execute a command by name with structured arguments.
 
     Args:

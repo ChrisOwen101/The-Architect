@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Optional
 from . import command
-from nio.responses import DirectRoomsResponse, DirectRoomsErrorResponse, RoomCreateResponse, RoomCreateError
+from nio.responses import DirectRoomsResponse, RoomCreateResponse, RoomCreateError
 
 
 @command(
@@ -87,7 +87,7 @@ async def createdm_handler(user_identifier: str, matrix_context: Optional[dict] 
         elif isinstance(create_response, RoomCreateError):
             return f"Error creating DM room: {create_response.message} (status code: {create_response.status_code})"
         else:
-            return f"Error creating DM room: Unexpected response type"
+            return "Error creating DM room: Unexpected response type"
 
     except Exception as e:
         return f"Error creating DM: {str(e)}"

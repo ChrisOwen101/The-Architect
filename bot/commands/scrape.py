@@ -113,7 +113,7 @@ async def scrape_handler(url: str, matrix_context: Optional[dict] = None) -> Opt
 
         # Add links
         if links:
-            response_parts.append(f"\n**Key Links:**")
+            response_parts.append("\n**Key Links:**")
             for link in links[:5]:  # Limit to 5 links
                 response_parts.append(f"- {link}")
 

@@ -401,7 +401,7 @@ async def generate_ai_reply(
                 messages.extend(tool_results)
 
                 logger.debug(
-                    f"Tool results added, continuing conversation loop")
+                    "Tool results added, continuing conversation loop")
                 # Continue loop to get LLM's synthesis
                 continue
 

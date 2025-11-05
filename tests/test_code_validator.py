@@ -1,5 +1,4 @@
 """Tests for code validator."""
-import pytest
 from bot.code_validator import validate_command_code, validate_test_code
 
 

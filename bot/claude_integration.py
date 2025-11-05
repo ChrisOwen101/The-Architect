@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import subprocess
-import os
 from typing import Optional, Callable, Awaitable
 from pathlib import Path
 
@@ -254,7 +253,7 @@ Please create both files now. Make sure to handle edge cases gracefully and keep
                     timeout=500  # 2 minutes timeout for code generation
                 )
                 stdout = '\n'.join(stdout_lines)
-                stderr = '\n'.join(stderr_lines)
+                _ = '\n'.join(stderr_lines)  # stderr captured but not used
             except asyncio.TimeoutError:
                 process.kill()
                 await process.wait()
@@ -320,7 +319,7 @@ Please create both files now. Make sure to handle edge cases gracefully and keep
                 logger.info(f"Successfully generated test file: {test_file}")
             else:
                 logger.warning(
-                    f"Test file not created, using fallback template")
+                    "Test file not created, using fallback template")
                 await _send_status("Creating fallback test file...")
                 # Create a basic test template as fallback
                 test_code = f"""import pytest

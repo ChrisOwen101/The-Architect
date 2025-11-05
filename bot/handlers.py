@@ -22,7 +22,7 @@ def set_config(config):
     _config = config
 
 
-async def generate_reply(body: str, client: AsyncClient = None, room = None, event: RoomMessageText = None) -> str | None:
+async def generate_reply(body: str, client: AsyncClient = None, room=None, event: RoomMessageText = None) -> str | None:
     """Generate reply using OpenAI function calling.
 
     This function is deprecated but kept for backward compatibility.
@@ -65,6 +65,24 @@ async def on_message(client: AsyncClient, room, event: RoomMessageText):
     if _config and _config.allowed_rooms and room.room_id not in _config.allowed_rooms:
         logger.debug("Ignoring message from non-allowed room: %s", room.room_id)
         return
+
+    # Check if this is a response to a pending question (before bot mention check)
+    # This allows users to respond to questions without mentioning the bot
+    from .user_input_handler import is_pending_question, handle_user_response
+
+    # Determine thread root using same logic as later in this function
+    thread_root = event.event_id
+    if hasattr(event, 'source') and isinstance(event.source, dict):
+        relates_to = event.source.get('content', {}).get('m.relates_to', {})
+        if relates_to.get('rel_type') == 'm.thread':
+            thread_root = relates_to.get('event_id', event.event_id)
+
+    # If there's a pending question in this thread, route the message there
+    if is_pending_question(thread_root):
+        was_handled = handle_user_response(thread_root, event.sender, event.body)
+        if was_handled:
+            logger.info("Message was response to pending question in thread %s", thread_root)
+            return  # Don't process as new command
 
     try:
         # All commands now require bot mention and use OpenAI function calling

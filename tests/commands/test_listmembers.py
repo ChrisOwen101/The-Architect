@@ -1,7 +1,7 @@
 """Tests for the listmembers command."""
 from __future__ import annotations
 import pytest
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 from bot.commands.listmembers import listmembers_handler
 
 

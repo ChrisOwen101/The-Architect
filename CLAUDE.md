@@ -163,6 +163,25 @@ pytest tests/test_handlers.py -v
 - Includes usage hints for recall and forget commands
 - Handles empty state gracefully
 
+**bot/user_input_handler.py** - Synchronous user input gathering system
+- `PendingQuestion`: Dataclass tracking questions awaiting user responses with asyncio.Event coordination
+- `ask_user_and_wait()`: Sends question to user and waits (non-blocking) for response with timeout (default 120s)
+- `handle_user_response()`: Routes incoming messages to waiting questions (called from handlers.py)
+- `is_pending_question()`: Checks if a thread has a pending question
+- `cleanup_expired_questions()`: Background task that removes expired questions every 60 seconds
+- Global `_pending_questions` dict keyed by thread_root_id enables message routing
+- Uses asyncio.Event for non-blocking waiting while allowing other messages to be processed
+- Automatic cleanup in try/finally blocks prevents memory leaks
+
+**bot/commands/ask_user.py** - Ask user for input during conversations
+- Command for multi-turn interactions within a single conversation flow
+- Parameter: `question` (str, required) - the question to ask the user
+- Sends question with ❓ emoji prefix for visual indication
+- Waits up to 2 minutes for user response (configurable timeout)
+- Returns "User answered: {response}" or timeout/error message
+- Users do NOT need to mention the bot in their responses (mention requirement bypassed for pending questions)
+- Enables complex workflows: gathering info step-by-step, confirming actions, escalating when uncertain
+
 ### Key Architectural Decisions
 
 1. **Type-annotated command system**: Commands are individual Python modules in `bot/commands/`. Each uses `@command` decorator with explicit parameter definitions (name, type, description, required). No regex patterns - all parameters are type-safe.
@@ -188,6 +207,8 @@ pytest tests/test_handlers.py -v
 11. **OpenAI function calling integration**: The bot automatically generates OpenAI function schemas from command parameter definitions. This enables natural language command invocation without manual pattern matching. The bot fetches full thread context (up to 50 messages) to maintain conversation continuity.
 
 12. **Automatic memory system**: The bot automatically extracts and remembers important information from conversations using OpenAI analysis. Memories are stored in markdown files with YAML frontmatter, organized per-user and per-room. The system uses importance scoring (recency + access frequency) to prioritize relevant memories. Memory injection happens before each AI call (last 30 days), and extraction happens after responses as a background task (fire-and-forget). Users can search (`recall`), delete (`forget`), and view statistics (`memory_stats`) for their memories. Storage location: `data/memories/` (excluded from git for privacy).
+
+13. **Multi-turn conversation support**: The `ask_user` command enables OpenAI to ask follow-up questions and wait for responses within a single conversation flow. Uses asyncio.Event-based waiting (non-blocking) with pending question registry keyed by thread_root_id. Responses bypass the bot mention requirement. Supports multiple sequential exchanges (OpenAI conversation loop handles up to 20 iterations). Timeout handling (120s default) prevents indefinite waits. Background cleanup task removes expired questions every 60 seconds to prevent memory leaks.
 
 ## Development Patterns
 
@@ -267,6 +288,43 @@ Deletes the memory with the specified ID (from `recall` output). Users can only 
 - **Privacy**: User memories are stored separately per user and per room (`data/memories/users/` and `data/memories/rooms/`)
 - **Storage format**: Markdown files with YAML frontmatter (human-readable, version-control friendly)
 
+### Using Multi-Turn Conversations
+
+The bot can ask follow-up questions during conversations using the `ask_user` command. This is handled automatically by OpenAI function calling - you don't invoke it directly. The bot uses it when it needs additional information to complete a task.
+
+**How it works:**
+1. User makes a request: `@architect book me a flight`
+2. OpenAI calls `ask_user(question="Where are you flying from?")`
+3. Bot sends: `❓ Where are you flying from?`
+4. User responds: `San Francisco` (no mention required)
+5. OpenAI receives: `User answered: San Francisco`
+6. OpenAI calls `ask_user(question="Where to?")`
+7. Bot sends: `❓ Where to?`
+8. User responds: `New York`
+9. OpenAI receives: `User answered: New York`
+10. OpenAI calls `book_flight(from="SFO", to="NYC")`
+11. Bot completes the task
+
+**Key behaviors:**
+- **No mention required for responses**: Users can respond to questions without mentioning the bot
+- **Timeout handling**: Questions expire after 2 minutes if user doesn't respond
+- **Thread isolation**: Each thread can have one pending question at a time
+- **Multiple exchanges**: OpenAI can ask multiple follow-up questions in sequence (up to 20 iterations)
+- **Natural flow**: OpenAI decides when it has enough information to proceed
+
+**Common use cases:**
+- **Gathering required information**: `@architect create user` → bot asks for email, name, role
+- **Confirming destructive actions**: `@architect delete database` → bot asks "Are you sure? (yes/no)"
+- **Escalating when uncertain**: `@architect deploy` → bot asks "Which environment? (staging/prod)"
+- **Collecting sensitive data**: `@architect setup API` → bot asks for API keys step-by-step
+
+**Developer notes:**
+- The `ask_user` command is registered like any other command and exposed to OpenAI
+- Implemented in `bot/commands/ask_user.py` using `bot/user_input_handler.py`
+- Responses are intercepted in `bot/handlers.py` before the bot mention check
+- Uses asyncio.Event for non-blocking waiting (other messages can be processed)
+- Global `_pending_questions` dict tracks questions by thread_root_id
+
 ### Testing Patterns
 - Use pytest with pytest-asyncio for async tests
 - Test command handlers directly by importing and calling them
@@ -345,3 +403,17 @@ Deletes the memory with the specified ID (from `recall` output). Users can only 
 24. **Memory deletion ownership**: Users can only delete their own memories. The `delete_memory()` function checks that `user_id` matches. This prevents cross-user memory deletion but doesn't prevent users from deleting memories in shared rooms.
 
 25. **Dependencies for memory system**: The memory system requires `aiofiles` (async file I/O) and `PyYAML` (YAML parsing). These are in `requirements.txt`. Missing dependencies will cause import errors on bot startup.
+
+26. **ask_user timeout behavior**: When using `ask_user`, if the user doesn't respond within 120 seconds (2 minutes), the function returns a timeout message to OpenAI. OpenAI can handle this gracefully (e.g., "I didn't receive a response, so I'll skip this step"). The timeout is configurable in `bot/commands/ask_user.py`.
+
+27. **ask_user mention bypass**: When a question is pending in a thread, responses bypass the bot mention requirement. This is intentional - users shouldn't have to mention the bot for every answer. The bypass is implemented in `bot/handlers.py` by checking `is_pending_question()` before the mention check.
+
+28. **ask_user thread isolation**: Each thread can have only ONE pending question at a time. If OpenAI tries to call `ask_user` twice in the same thread simultaneously, the second call will fail with an error message. This prevents confusion about which question the user is answering.
+
+29. **ask_user cleanup task**: The cleanup task in `bot/user_input_handler.py` runs every 60 seconds to remove expired questions. This prevents memory leaks if questions somehow don't get cleaned up in the try/finally block. The task is automatically started in `bot/main.py` during bot initialization and stopped during shutdown.
+
+30. **ask_user wrong user responses**: If user A is asked a question but user B responds in the same thread, the response is ignored. Only the user who was originally asked can provide the answer. This prevents security issues where one user could hijack another's conversation.
+
+31. **ask_user and bot restarts**: If the bot restarts while questions are pending, those questions are lost (not persisted). Users will need to restart their requests. This is acceptable for most use cases but could be improved with persistence if needed.
+
+32. **ask_user iteration limit**: The OpenAI conversation loop has a maximum of 20 iterations (defined in `bot/openai_integration.py`). If a conversation requires more than 20 function calls (including multiple `ask_user` calls), it will be truncated. This prevents infinite loops but could limit very complex multi-turn interactions.

@@ -390,8 +390,8 @@ class MemoryStore:
             filtered = [
                 m for m in filtered
                 if query_lower in m.content.lower() or
-                   (m.context and query_lower in m.context.lower()) or
-                   any(query_lower in tag.lower() for tag in m.tags)
+                (m.context and query_lower in m.context.lower()) or
+                any(query_lower in tag.lower() for tag in m.tags)
             ]
 
         # Update access counts

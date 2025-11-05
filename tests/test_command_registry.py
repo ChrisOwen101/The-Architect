@@ -1,6 +1,5 @@
 """Tests for command registry system."""
 import pytest
-from bot.commands import CommandRegistry, command
 
 
 @pytest.mark.asyncio
@@ -19,7 +18,7 @@ async def test_registry_registration():
 @pytest.mark.asyncio
 async def test_registry_execute_matching():
     """Test executing a matching command."""
-    from bot.commands import execute_command, get_registry
+    from bot.commands import execute_command
 
     # Commands should already be loaded from bot/commands/
     result = await execute_command("ping", {})

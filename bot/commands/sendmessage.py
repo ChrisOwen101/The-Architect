@@ -57,7 +57,7 @@ async def sendmessage_handler(recipient: str, message: str, matrix_context: Opti
             return f"Message queued for {recipient}: \"{message}\"\n\nNote: Direct messaging requires room creation. Please use the Matrix client to start a DM with {recipient}, then use this command in that room, or the bot administrator needs to implement room creation."
         else:
             # If it's not a user ID, treat it as a display name
-            return f"Error: Please provide a valid Matrix user ID (e.g., @user:server.com). Display name lookup is not yet implemented."
+            return "Error: Please provide a valid Matrix user ID (e.g., @user:server.com). Display name lookup is not yet implemented."
 
     except Exception as e:
         return f"Error sending message: {str(e)}"
