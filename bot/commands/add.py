@@ -187,4 +187,4 @@ async def _delayed_reload():
     """Reload commands after a short delay to allow message to be sent."""
     import asyncio
     await asyncio.sleep(1)  # Wait 1 second for message to be sent
-    reload_commands()
+    await reload_commands()

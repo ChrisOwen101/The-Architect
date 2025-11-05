@@ -43,6 +43,9 @@ class PendingQuestion:
 # This allows message handler to route responses to waiting questions
 _pending_questions: Dict[str, PendingQuestion] = {}
 
+# Lock for thread-safe access to _pending_questions dict
+_pending_questions_lock = asyncio.Lock()
+
 # Background cleanup task reference
 _cleanup_task: Optional[asyncio.Task] = None
 
@@ -95,21 +98,22 @@ async def ask_user_and_wait(
         if relates_to.get('rel_type') == 'm.thread':
             thread_root_id = relates_to.get('event_id', event.event_id)
 
-    # Check if there's already a pending question in this thread
-    if thread_root_id in _pending_questions:
-        logger.warning(f"Thread {thread_root_id} already has a pending question")
-        return "[Error: Another question is already pending in this thread]"
+    # Check if there's already a pending question in this thread (thread-safe)
+    async with _pending_questions_lock:
+        if thread_root_id in _pending_questions:
+            logger.warning(f"Thread {thread_root_id} already has a pending question")
+            return "[Error: Another question is already pending in this thread]"
 
-    # Create pending question
-    pending = PendingQuestion(
-        question=question,
-        thread_root_id=thread_root_id,
-        user_id=event.sender,
-        timeout_at=time.time() + timeout
-    )
+        # Create pending question
+        pending = PendingQuestion(
+            question=question,
+            thread_root_id=thread_root_id,
+            user_id=event.sender,
+            timeout_at=time.time() + timeout
+        )
 
-    # Register globally
-    _pending_questions[thread_root_id] = pending
+        # Register globally
+        _pending_questions[thread_root_id] = pending
 
     logger.info(f"Registered pending question in thread {thread_root_id}, timeout in {timeout}s")
 
@@ -153,8 +157,9 @@ async def ask_user_and_wait(
         return f"[Error sending question: {e}]"
 
     finally:
-        # Always clean up pending question
-        _pending_questions.pop(thread_root_id, None)
+        # Always clean up pending question (thread-safe)
+        async with _pending_questions_lock:
+            _pending_questions.pop(thread_root_id, None)
         logger.debug(f"Cleaned up pending question for thread {thread_root_id}")
 
 
@@ -163,6 +168,12 @@ def handle_user_response(thread_root_id: str, user_id: str, response: str) -> bo
 
     This function is called from the message handler (on_message in handlers.py)
     when a message arrives that might be a response to a pending question.
+
+    Note: This function is synchronous for backward compatibility with handlers.py,
+    but it accesses _pending_questions which is protected by a lock. Since this is
+    a read-mostly operation (checking and updating existing entries), and the dict
+    access itself is atomic in Python, we don't need the lock here. The lock protects
+    the registration and cleanup operations which are async and more complex.
 
     Args:
         thread_root_id: Thread ID where the response was sent
@@ -194,6 +205,10 @@ def handle_user_response(thread_root_id: str, user_id: str, response: str) -> bo
         return False
 
     # Valid response - store it and signal the waiting coroutine
+    # This is safe without a lock because:
+    # 1. We're only modifying fields of an existing object
+    # 2. The object was retrieved atomically from the dict
+    # 3. The event.set() call is thread-safe
     pending.response = response
     pending.event.set()
 
@@ -238,20 +253,23 @@ async def cleanup_expired_questions() -> None:
             await asyncio.sleep(60)  # Check every minute
 
             now = time.time()
-            expired = [
-                tid for tid, pq in _pending_questions.items()
-                if now > pq.timeout_at
-            ]
 
-            if expired:
-                logger.info(f"Cleaning up {len(expired)} expired pending questions")
+            # Thread-safe cleanup of expired questions
+            async with _pending_questions_lock:
+                expired = [
+                    tid for tid, pq in _pending_questions.items()
+                    if now > pq.timeout_at
+                ]
 
-                for tid in expired:
-                    pq = _pending_questions.pop(tid, None)
-                    if pq and not pq.event.is_set():
-                        # Signal event to unblock waiting coroutine
-                        pq.event.set()
-                        logger.debug(f"Cleaned up expired question in thread {tid}")
+                if expired:
+                    logger.info(f"Cleaning up {len(expired)} expired pending questions")
+
+                    for tid in expired:
+                        pq = _pending_questions.pop(tid, None)
+                        if pq and not pq.event.is_set():
+                            # Signal event to unblock waiting coroutine
+                            pq.event.set()
+                            logger.debug(f"Cleaned up expired question in thread {tid}")
 
     except asyncio.CancelledError:
         logger.info("Cleanup task cancelled")

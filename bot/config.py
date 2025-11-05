@@ -13,6 +13,22 @@ CONFIG_FILE = "config.toml"
 
 
 @dataclass
+class ConcurrencyConfig:
+    """Concurrency control configuration."""
+    max_concurrent_conversations: int = 10
+    max_conversations_per_user: int = 3
+    conversation_idle_timeout: int = 300  # seconds
+    conversation_max_duration: int = 600  # seconds
+
+
+@dataclass
+class RateLimitingConfig:
+    """Rate limiting configuration."""
+    openai_requests_per_second: int = 5
+    openai_burst_limit: int = 10
+
+
+@dataclass
 class BotConfig:
     homeserver: str
     user_id: str
@@ -21,11 +37,17 @@ class BotConfig:
     log_level: str = "INFO"
     allowed_rooms: list[str] = None  # List of allowed room IDs
     enable_auto_commit: bool = True  # Auto-commit code changes to git
+    concurrency: ConcurrencyConfig = None
+    rate_limiting: RateLimitingConfig = None
 
     def __post_init__(self):
         """Initialize default values for mutable fields."""
         if self.allowed_rooms is None:
             self.allowed_rooms = []
+        if self.concurrency is None:
+            self.concurrency = ConcurrencyConfig()
+        if self.rate_limiting is None:
+            self.rate_limiting = RateLimitingConfig()
 
     @property
     def access_token(self) -> str:
@@ -68,5 +90,17 @@ def load_config(path: str = CONFIG_FILE) -> BotConfig:
     # Handle allowed_rooms - ensure it's a list
     if "allowed_rooms" in bot and not isinstance(bot["allowed_rooms"], list):
         bot["allowed_rooms"] = [bot["allowed_rooms"]]
+
+    # Load concurrency config (optional, has defaults)
+    concurrency_data = data.get("concurrency", {})
+    concurrency = ConcurrencyConfig(**concurrency_data) if concurrency_data else ConcurrencyConfig()
+
+    # Load rate limiting config (optional, has defaults)
+    rate_limiting_data = data.get("rate_limiting", {})
+    rate_limiting = RateLimitingConfig(**rate_limiting_data) if rate_limiting_data else RateLimitingConfig()
+
+    # Add to bot config
+    bot["concurrency"] = concurrency
+    bot["rate_limiting"] = rate_limiting
 
     return BotConfig(**bot)

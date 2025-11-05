@@ -182,6 +182,39 @@ pytest tests/test_handlers.py -v
 - Users do NOT need to mention the bot in their responses (mention requirement bypassed for pending questions)
 - Enables complex workflows: gathering info step-by-step, confirming actions, escalating when uncertain
 
+**bot/conversation_manager.py** - Concurrent conversation management
+- `ConversationContext`: Dataclass tracking individual conversation state (id, thread, user, room, timing, status)
+- `ConversationManager`: Manages active conversations with resource limits
+- `start_conversation()`: Acquire conversation slot, enforce global (10) and per-user (3) limits
+- `end_conversation()`: Release conversation slot and cleanup resources
+- `get_active_conversations()`: List all active conversations for monitoring
+- `get_stats()`: Get conversation statistics (total active, per-user counts, limits)
+- Background cleanup task: Removes idle (5min) and expired (10min) conversations automatically
+- Thread-safe operations using `asyncio.Lock` for all shared state modifications
+
+**bot/rate_limiter.py** - Token bucket rate limiting
+- `TokenBucket`: Per-user token bucket with refill mechanism
+- `RateLimiter`: Global and per-user rate limiting for OpenAI API calls
+- Rate: 5 requests/second, burst: 10 (configurable)
+- Per-user buckets: Prevents single user monopolizing API quota
+- Global bucket: Enforces overall rate limit across all users
+- FIFO queuing: Fair distribution of API capacity
+- Background refill task: Replenishes tokens continuously
+- Idle bucket cleanup: Prevents memory leaks from inactive users
+
+**bot/matrix_wrapper.py** - Thread-safe Matrix client wrapper
+- `MatrixClientWrapper`: Wraps matrix-nio AsyncClient with locking
+- Serializes all Matrix API operations (room_send, room_messages, sync, etc.)
+- Single global lock prevents concurrent client access
+- Transparent proxying: Non-wrapped attributes forwarded to underlying client
+- Ensures matrix-nio thread safety in concurrent environment
+
+**bot/commands/status.py** - Conversation status command
+- Shows user's active conversations (thread IDs, elapsed time, status)
+- Displays bot capacity (active/max conversations, rate limit info)
+- Parameterless command available to all users
+- Useful for monitoring and debugging concurrent conversations
+
 ### Key Architectural Decisions
 
 1. **Type-annotated command system**: Commands are individual Python modules in `bot/commands/`. Each uses `@command` decorator with explicit parameter definitions (name, type, description, required). No regex patterns - all parameters are type-safe.
@@ -209,6 +242,8 @@ pytest tests/test_handlers.py -v
 12. **Automatic memory system**: The bot automatically extracts and remembers important information from conversations using OpenAI analysis. Memories are stored in markdown files with YAML frontmatter, organized per-user and per-room. The system uses importance scoring (recency + access frequency) to prioritize relevant memories. Memory injection happens before each AI call (last 30 days), and extraction happens after responses as a background task (fire-and-forget). Users can search (`recall`), delete (`forget`), and view statistics (`memory_stats`) for their memories. Storage location: `data/memories/` (excluded from git for privacy).
 
 13. **Multi-turn conversation support**: The `ask_user` command enables OpenAI to ask follow-up questions and wait for responses within a single conversation flow. Uses asyncio.Event-based waiting (non-blocking) with pending question registry keyed by thread_root_id. Responses bypass the bot mention requirement. Supports multiple sequential exchanges (OpenAI conversation loop handles up to 20 iterations). Timeout handling (120s default) prevents indefinite waits. Background cleanup task removes expired questions every 60 seconds to prevent memory leaks.
+
+14. **Concurrent conversation architecture**: The bot supports multiple simultaneous conversations using asyncio concurrency with resource management. ConversationManager enforces global limit (10 concurrent) and per-user limit (3 per user). RateLimiter implements token bucket algorithm (5 req/s, burst 10) for OpenAI API calls. All shared state protected by asyncio.Lock. Background cleanup tasks handle idle timeout (5min) and max duration (10min). Queue notifications inform users when capacity exceeded. Session pooling reduces OpenAI API overhead. Command registry versioning enables safe hot reloads without interrupting active conversations.
 
 ## Development Patterns
 
@@ -325,6 +360,88 @@ The bot can ask follow-up questions during conversations using the `ask_user` co
 - Uses asyncio.Event for non-blocking waiting (other messages can be processed)
 - Global `_pending_questions` dict tracks questions by thread_root_id
 
+### Managing Concurrent Conversations
+
+The Architect supports multiple users having simultaneous conversations. The system automatically manages capacity and provides feedback when limits are reached.
+
+**Capacity Limits:**
+- **Global limit**: 10 concurrent conversations across all users
+- **Per-user limit**: 3 concurrent conversations per user
+- **Rate limit**: 5 OpenAI API requests/second (burst: 10)
+
+**User Experience:**
+
+**Normal Operation:**
+```
+User A: @architect add command foo
+[Bot processes immediately, shows progress every 5 steps or 10 seconds]
+Bot: ⏳ Working... (step 5/12)
+Bot: ✅ Done! Created command 'foo'
+
+[Meanwhile, User B can also interact]
+User B: @architect list commands
+Bot: Here are all commands... [immediate response, no blocking]
+```
+
+**At Capacity (Queue Notification):**
+```
+User C: @architect generate complex feature
+Bot: 🚦 I'm handling 10 conversations right now (limit: 10).
+     Please try again in about 1 minute.
+```
+
+**Checking Status:**
+```
+User: @architect status
+Bot: 📊 Your Status:
+
+     Active Conversations (2/3):
+     1. ⏳ Thread $abc1234... (45s ago)
+     2. ⏳ Thread $def5678... (12s ago)
+
+     📈 Bot Status:
+     • Active conversations: 8/10
+     • Rate limit: 5.0 req/s (burst: 10)
+     • Global tokens available: 7
+```
+
+**Configuration:**
+Limits are configured in `config.toml`:
+```toml
+[concurrency]
+max_concurrent_conversations = 10
+max_conversations_per_user = 3
+conversation_idle_timeout = 300  # 5 minutes
+conversation_max_duration = 600  # 10 minutes
+
+[rate_limiting]
+openai_requests_per_second = 5
+openai_burst_limit = 10
+```
+
+**Automatic Cleanup:**
+- Idle conversations (no activity for 5 minutes) are automatically ended
+- Long-running conversations (>10 minutes) are automatically ended with notification
+- Background cleanup tasks run every 60 seconds
+- Resources freed immediately when conversations complete
+
+**Thread Safety:**
+- All shared state protected by `asyncio.Lock`
+- File-level locking in memory store prevents corruption
+- Matrix client operations serialized to prevent conflicts
+- Command registry versioning allows safe hot reloads
+
+**Performance:**
+- Session pooling: Single aiohttp session reused across all API calls
+- Connection reuse: TCP connections maintained for OpenAI API
+- Efficient cleanup: Background tasks prevent resource leaks
+- Rate limiting: Smooth distribution of API quota
+
+**Monitoring:**
+- Use `@architect status` command to check conversation state
+- Check logs for conversation lifecycle events
+- Monitor conversation count, queue depth, rate limit hits
+
 ### Testing Patterns
 - Use pytest with pytest-asyncio for async tests
 - Test command handlers directly by importing and calling them
@@ -351,6 +468,12 @@ The bot can ask follow-up questions during conversations using the `ask_user` co
 - **Persistence**: Add `SqliteStore` to persist sync tokens and avoid processing missed events
 - **Approval workflow**: Add manual approval step before executing generated code
 - **Parameter validation**: Add custom validators for parameter types beyond basic type checking
+- **Conversation priority**: Add priority levels to ConversationManager (high/normal/low) and queue high-priority conversations first
+- **Adaptive rate limiting**: Adjust rate limits dynamically based on API response times and error rates
+- **Conversation persistence**: Store conversation state to sqlite/redis for recovery after bot restart
+- **Metrics export**: Add Prometheus metrics for conversation count, duration, queue depth, rate limit hits
+- **User quotas**: Add daily/hourly conversation limits per user to prevent abuse
+- **Graceful degradation**: When OpenAI API is down, queue requests and retry automatically
 
 ## Important Gotchas
 
@@ -417,3 +540,19 @@ The bot can ask follow-up questions during conversations using the `ask_user` co
 31. **ask_user and bot restarts**: If the bot restarts while questions are pending, those questions are lost (not persisted). Users will need to restart their requests. This is acceptable for most use cases but could be improved with persistence if needed.
 
 32. **ask_user iteration limit**: The OpenAI conversation loop has a maximum of 20 iterations (defined in `bot/openai_integration.py`). If a conversation requires more than 20 function calls (including multiple `ask_user` calls), it will be truncated. This prevents infinite loops but could limit very complex multi-turn interactions.
+
+33. **Conversation limits**: The bot enforces a global limit of 10 concurrent conversations and 3 per user. When limits are exceeded, users receive queue notifications and should try again in a minute. Limits are configurable in `config.toml` under `[concurrency]` section.
+
+34. **Rate limiting behavior**: OpenAI API calls are rate-limited at 5 requests/second with burst capacity of 10. The rate limiter uses token bucket algorithm with per-user buckets to ensure fair distribution. If rate limit is hit, requests queue automatically (FIFO) rather than failing.
+
+35. **Conversation timeouts**: Conversations have two timeout mechanisms: idle timeout (5 minutes of no activity) and max duration (10 minutes total). When timeout occurs, conversation is automatically ended with cleanup. Users are notified if max duration exceeded. Configure in `config.toml`.
+
+36. **Matrix client thread safety**: The MatrixClientWrapper serializes all Matrix API operations using a global lock. This prevents race conditions in matrix-nio AsyncClient which is not thread-safe. The wrapper is transparent - all client methods work as normal but are serialized.
+
+37. **Memory store file locking**: Each user's memory file has its own `asyncio.Lock` to prevent concurrent write corruption. Different users' files don't block each other. Lock is acquired during read-modify-write operations (add_memory, delete_memory) but not for read-only access.
+
+38. **Command reload safety**: Command registry uses versioning to allow safe hot reloads during active conversations. Old version maintained for 30-second grace period. In-flight requests complete using old version. New requests use new version. This prevents "command not found" errors during reload.
+
+39. **Session pooling**: Global aiohttp session is reused across all OpenAI API calls. Session is initialized on bot startup and closed on shutdown. This reduces connection overhead (TCP handshake, TLS negotiation) significantly. Session is thread-safe for concurrent use.
+
+40. **Background cleanup tasks**: Three background tasks run continuously: (1) pending question cleanup (every 60s), (2) conversation cleanup (every 60s), (3) rate limiter refill (every 0.1s). All tasks handle cancellation gracefully and are stopped during bot shutdown. Task failures are logged but don't crash bot.

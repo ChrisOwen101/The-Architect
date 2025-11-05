@@ -9,3 +9,21 @@ device_id = "DEV1"
 # display_name = "Echo Bot"
 # Logging level (DEBUG, INFO, WARNING, ERROR)
 log_level = "DEBUG"
+
+# Concurrency control settings
+[concurrency]
+# Maximum total concurrent conversations (default: 10)
+max_concurrent_conversations = 10
+# Maximum concurrent conversations per user (default: 3)
+max_conversations_per_user = 3
+# Conversation idle timeout in seconds (default: 300 = 5 minutes)
+conversation_idle_timeout = 300
+# Maximum conversation duration in seconds (default: 600 = 10 minutes)
+conversation_max_duration = 600
+
+# Rate limiting settings
+[rate_limiting]
+# OpenAI API requests per second (default: 5)
+openai_requests_per_second = 5
+# OpenAI API burst limit (default: 10)
+openai_burst_limit = 10

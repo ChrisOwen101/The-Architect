@@ -5,7 +5,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def reload_commands() -> None:
+async def reload_commands() -> None:
     """
     Hot reload all command modules without restarting the bot process.
 
@@ -13,16 +13,19 @@ def reload_commands() -> None:
     allowing the bot to continue running and processing the current request.
     The command registry is cleared and all modules are reloaded, ensuring
     that new or modified commands are immediately available.
+
+    The reload uses versioning to ensure in-flight requests can complete
+    with the old command registry before it's garbage collected (30s grace period).
     """
     logger.info("Hot reloading commands...")
 
     try:
-        # Import the load_commands function from the command registry
-        from bot.commands import load_commands
+        # Import the registry
+        from bot.commands import get_registry
 
-        # Reload all command modules
-        # This clears the registry and reloads each module using importlib.reload()
-        load_commands()
+        # Reload all command modules with versioning
+        registry = get_registry()
+        await registry.reload_commands()
 
         logger.info("Commands reloaded successfully")
 

@@ -5,6 +5,7 @@ Memories are organized per-user and per-room, with importance scoring based on r
 and access frequency.
 """
 from __future__ import annotations
+import asyncio
 import logging
 import math
 import re
@@ -12,11 +13,15 @@ import time
 import uuid
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict
 import aiofiles
 import yaml
 
 logger = logging.getLogger(__name__)
+
+# Global file locks for concurrent access protection
+# Each file path gets its own asyncio.Lock to prevent concurrent writes
+_file_locks: Dict[str, asyncio.Lock] = {}
 
 
 @dataclass
@@ -131,6 +136,21 @@ class MemoryEntry:
             access_count=frontmatter.get('access_count', 0),
             last_accessed=frontmatter.get('last_accessed')
         )
+
+
+def _get_file_lock(file_path: Path) -> asyncio.Lock:
+    """Get or create a lock for a specific file path.
+
+    Args:
+        file_path: Path to the file
+
+    Returns:
+        asyncio.Lock instance for this file
+    """
+    path_str = str(file_path)
+    if path_str not in _file_locks:
+        _file_locks[path_str] = asyncio.Lock()
+    return _file_locks[path_str]
 
 
 class MemoryStore:
@@ -277,14 +297,17 @@ class MemoryStore:
         else:
             file_path = self._get_user_memory_file(user_id)
 
-        # Read existing memories
-        memories = await self._read_memories(file_path)
+        # Acquire file lock for thread-safe write
+        lock = _get_file_lock(file_path)
+        async with lock:
+            # Read existing memories
+            memories = await self._read_memories(file_path)
 
-        # Append new memory
-        memories.append(memory)
+            # Append new memory
+            memories.append(memory)
 
-        # Write back to file
-        await self._write_memories(file_path, memories)
+            # Write back to file
+            await self._write_memories(file_path, memories)
 
         logger.info(f"Added {scope} memory {memory.id} for {user_id} in {room_id}")
         return memory.id
@@ -313,25 +336,28 @@ class MemoryStore:
         else:
             file_path = self._get_user_memory_file(user_id)
 
-        # Read all memories
-        all_memories = await self._read_memories(file_path)
-
         # Filter by time window
         current_time = time.time()
         cutoff_time = current_time - (days * 86400)
 
-        recent_memories = [
-            m for m in all_memories
-            if m.timestamp >= cutoff_time
-        ]
+        # Acquire file lock for thread-safe read-modify-write
+        lock = _get_file_lock(file_path)
+        async with lock:
+            # Read all memories
+            all_memories = await self._read_memories(file_path)
 
-        # Update access counts and timestamps
-        for memory in recent_memories:
-            memory.access_count += 1
-            memory.last_accessed = current_time
+            recent_memories = [
+                m for m in all_memories
+                if m.timestamp >= cutoff_time
+            ]
 
-        # Write updated memories back
-        await self._write_memories(file_path, all_memories)
+            # Update access counts and timestamps
+            for memory in recent_memories:
+                memory.access_count += 1
+                memory.last_accessed = current_time
+
+            # Write updated memories back
+            await self._write_memories(file_path, all_memories)
 
         # Sort by importance (descending)
         recent_memories.sort(
@@ -372,36 +398,40 @@ class MemoryStore:
         else:
             file_path = self._get_user_memory_file(user_id)
 
-        # Read all memories
-        all_memories = await self._read_memories(file_path)
-
-        # Apply filters
-        filtered = all_memories
-
-        # Date range filter
-        if start_date is not None:
-            filtered = [m for m in filtered if m.timestamp >= start_date]
-        if end_date is not None:
-            filtered = [m for m in filtered if m.timestamp <= end_date]
-
-        # Text search filter
-        if query:
-            query_lower = query.lower()
-            filtered = [
-                m for m in filtered
-                if query_lower in m.content.lower() or
-                (m.context and query_lower in m.context.lower()) or
-                any(query_lower in tag.lower() for tag in m.tags)
-            ]
-
-        # Update access counts
         current_time = time.time()
-        for memory in filtered:
-            memory.access_count += 1
-            memory.last_accessed = current_time
 
-        # Write updated memories back
-        await self._write_memories(file_path, all_memories)
+        # Acquire file lock for thread-safe read-modify-write
+        lock = _get_file_lock(file_path)
+        async with lock:
+            # Read all memories
+            all_memories = await self._read_memories(file_path)
+
+            # Apply filters
+            filtered = all_memories
+
+            # Date range filter
+            if start_date is not None:
+                filtered = [m for m in filtered if m.timestamp >= start_date]
+            if end_date is not None:
+                filtered = [m for m in filtered if m.timestamp <= end_date]
+
+            # Text search filter
+            if query:
+                query_lower = query.lower()
+                filtered = [
+                    m for m in filtered
+                    if query_lower in m.content.lower() or
+                    (m.context and query_lower in m.context.lower()) or
+                    any(query_lower in tag.lower() for tag in m.tags)
+                ]
+
+            # Update access counts
+            for memory in filtered:
+                memory.access_count += 1
+                memory.last_accessed = current_time
+
+            # Write updated memories back
+            await self._write_memories(file_path, all_memories)
 
         # Sort by importance
         filtered.sort(
@@ -439,22 +469,25 @@ class MemoryStore:
         else:
             file_path = self._get_user_memory_file(user_id)
 
-        # Read all memories
-        memories = await self._read_memories(file_path)
+        # Acquire file lock for thread-safe read-modify-write
+        lock = _get_file_lock(file_path)
+        async with lock:
+            # Read all memories
+            memories = await self._read_memories(file_path)
 
-        # Find and remove the memory
-        original_count = len(memories)
-        memories = [
-            m for m in memories
-            if not (m.id == memory_id and m.user_id == user_id)
-        ]
+            # Find and remove the memory
+            original_count = len(memories)
+            memories = [
+                m for m in memories
+                if not (m.id == memory_id and m.user_id == user_id)
+            ]
 
-        if len(memories) == original_count:
-            logger.warning(f"Memory {memory_id} not found or unauthorized")
-            return False
+            if len(memories) == original_count:
+                logger.warning(f"Memory {memory_id} not found or unauthorized")
+                return False
 
-        # Write back
-        await self._write_memories(file_path, memories)
+            # Write back
+            await self._write_memories(file_path, memories)
 
         logger.info(f"Deleted memory {memory_id} for {user_id}")
         return True

@@ -3,6 +3,7 @@ import logging
 from typing import Optional, TYPE_CHECKING, Any, Dict, List
 import aiohttp
 import asyncio
+import time
 
 if TYPE_CHECKING:
     from nio import AsyncClient, RoomMessageText
@@ -15,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 # Initialize global memory store
 _memory_store = MemoryStore(data_dir="data")
+
+# Global aiohttp session for OpenAI API calls (connection pooling)
+_openai_session: Optional[aiohttp.ClientSession] = None
+_session_lock = asyncio.Lock()
 
 # OpenAI API configuration
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
@@ -36,6 +41,39 @@ FUNCTION_FRIENDLY_NAMES = {
     "add": "Creating a new command",
     "remove": "Removing a command",
 }
+
+
+async def get_openai_session() -> aiohttp.ClientSession:
+    """
+    Get or create global aiohttp session for OpenAI API calls.
+
+    This function implements connection pooling to improve performance
+    by reusing TCP connections across API calls.
+
+    Returns:
+        aiohttp.ClientSession instance
+    """
+    global _openai_session
+
+    async with _session_lock:
+        if _openai_session is None or _openai_session.closed:
+            _openai_session = aiohttp.ClientSession()
+            logger.info("Created global aiohttp session for OpenAI API")
+        return _openai_session
+
+
+async def close_openai_session():
+    """
+    Close the global aiohttp session.
+
+    Should be called during bot shutdown to properly close connections.
+    """
+    global _openai_session
+
+    if _openai_session and not _openai_session.closed:
+        await _openai_session.close()
+        logger.info("Closed global aiohttp session")
+        _openai_session = None
 
 
 def is_bot_mentioned(client: AsyncClient, event: RoomMessageText) -> bool:
@@ -195,6 +233,29 @@ async def send_status_message(
         # Don't fail the command if status update fails
 
 
+async def send_progress_update(
+    client: AsyncClient,
+    room,
+    event: RoomMessageText,
+    thread_root_id: str,
+    current: int,
+    total: int
+) -> None:
+    """
+    Send progress update to user showing iteration progress.
+
+    Args:
+        client: Matrix client
+        room: Room object
+        event: Original event being replied to
+        thread_root_id: Event ID of the thread root
+        current: Current iteration number
+        total: Total iterations (max)
+    """
+    message = f"⏳ Working... (step {current}/{total})"
+    await send_status_message(client, room, event, message, thread_root_id)
+
+
 async def call_openai_api(
     messages: List[Dict[str, Any]],
     api_key: str,
@@ -203,6 +264,8 @@ async def call_openai_api(
 ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Make HTTP request to OpenAI Chat Completions API.
+
+    Uses a global session for connection pooling to improve performance.
 
     Args:
         messages: List of message dicts with role and content
@@ -230,22 +293,24 @@ async def call_openai_api(
         payload["parallel_tool_calls"] = True
 
     try:
+        # Use global session for connection pooling
+        session = await get_openai_session()
         timeout = aiohttp.ClientTimeout(total=API_TIMEOUT)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(OPENAI_API_URL, json=payload, headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    message = data.get('choices', [{}])[0].get('message', {})
 
-                    if message:
-                        return message, None
-                    else:
-                        return None, "OpenAI API returned empty response"
+        async with session.post(OPENAI_API_URL, json=payload, headers=headers, timeout=timeout) as response:
+            if response.status == 200:
+                data = await response.json()
+                message = data.get('choices', [{}])[0].get('message', {})
+
+                if message:
+                    return message, None
                 else:
-                    error_text = await response.text()
-                    logger.error(
-                        f"OpenAI API error {response.status}: {error_text}")
-                    return None, f"OpenAI API error: {response.status}"
+                    return None, "OpenAI API returned empty response"
+            else:
+                error_text = await response.text()
+                logger.error(
+                    f"OpenAI API error {response.status}: {error_text}")
+                return None, f"OpenAI API error: {response.status}"
 
     except asyncio.TimeoutError:
         logger.error("OpenAI API request timed out")
@@ -341,10 +406,22 @@ async def generate_ai_reply(
 
         # Multi-turn conversation loop to handle function calling
         iteration = 0
+        last_update_time = time.time()
+
         while iteration < MAX_FUNCTION_CALL_ITERATIONS:
             iteration += 1
             logger.debug(
                 f"API call iteration {iteration}/{MAX_FUNCTION_CALL_ITERATIONS}")
+
+            # Send progress update if needed
+            # Update every 10 seconds OR every 5 iterations (whichever comes first)
+            now = time.time()
+            if (iteration % 5 == 0 or now - last_update_time > 10) and iteration > 1:
+                await send_progress_update(
+                    client, room, event, thread_root_id,
+                    iteration, MAX_FUNCTION_CALL_ITERATIONS
+                )
+                last_update_time = now
 
             # Call OpenAI API
             response_message, error = await call_openai_api(

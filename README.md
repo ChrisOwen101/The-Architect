@@ -253,9 +253,11 @@ OPENAI_API_KEY="sk-your_openai_key"
 
 ## Testing
 
+### Quick Testing
+
 ```bash
-# Run all tests
-pytest -q
+# Run all tests (excluding slow load tests)
+pytest -v -m "not slow"
 
 # Run with verbose output
 pytest -v
@@ -266,6 +268,37 @@ pytest tests/test_handlers.py -v
 # Run specific test
 pytest tests/test_memory_store.py::test_add_memory -v
 ```
+
+### Load Testing
+
+The bot includes comprehensive load tests to verify it handles production workloads correctly:
+
+```bash
+# Run all load tests (~35 seconds)
+./scripts/run_load_tests.sh
+
+# Run quick verification test (~1 second)
+./scripts/run_load_tests.sh --quick
+
+# Run specific load test
+pytest tests/test_load_concurrency.py::test_concurrent_user_load_50_users -v -s
+```
+
+**Load Test Coverage:**
+- 50+ concurrent users
+- Sustained load (30 seconds continuous)
+- Burst patterns (traffic spikes)
+- Mixed workloads (quick + complex conversations)
+- Limit enforcement verification
+- Stress testing (1000+ rapid cycles)
+
+**Performance Metrics Tracked:**
+- Response times (P50, P95, P99)
+- Throughput (conversations/second)
+- Memory usage (before/after/peak/growth)
+- Success rates and cleanup verification
+
+See [docs/LOAD_TESTING.md](docs/LOAD_TESTING.md) for comprehensive documentation.
 
 ## Important Notes
 

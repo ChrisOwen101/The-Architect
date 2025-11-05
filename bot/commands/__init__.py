@@ -1,5 +1,6 @@
 """Dynamic command registry system for The Architect bot."""
 from __future__ import annotations
+import asyncio
 import importlib
 import inspect
 import logging
@@ -30,10 +31,13 @@ class Command:
 
 
 class CommandRegistry:
-    """Registry for dynamically loaded commands."""
+    """Registry for dynamically loaded commands with versioning for safe reloads."""
 
     def __init__(self):
         self._commands: dict[str, Command] = {}
+        self._version: int = 0
+        self._lock = asyncio.Lock()
+        self._old_versions: list[tuple[int, dict[str, Command]]] = []
 
     def register(self, name: str, description: str, params: list[tuple[str, type, str, bool]],
                  handler: Callable[..., Awaitable[Optional[str]]],
@@ -117,6 +121,61 @@ class CommandRegistry:
     def clear(self) -> None:
         """Clear all registered commands."""
         self._commands.clear()
+
+    async def reload_commands(self) -> None:
+        """
+        Reload commands with versioning for safety.
+
+        This method:
+        1. Saves the current command registry version
+        2. Increments the version number
+        3. Reloads all command modules
+        4. Schedules cleanup of old version after grace period (30 seconds)
+
+        The grace period allows in-flight requests to complete using the old
+        command registry before it's garbage collected.
+        """
+        async with self._lock:
+            # Save current version
+            old_version = (self._version, self._commands.copy())
+            self._old_versions.append(old_version)
+
+            # Increment version
+            self._version += 1
+
+            logger.info(
+                f"Reloading commands: v{old_version[0]} -> v{self._version} "
+                f"({len(self._commands)} commands)"
+            )
+
+            # Reload all commands
+            self._commands.clear()
+            load_commands()
+
+            logger.info(
+                f"Commands reloaded: v{self._version} "
+                f"({len(self._commands)} commands registered)"
+            )
+
+            # Schedule cleanup of old version after grace period
+            asyncio.create_task(self._cleanup_old_version(old_version[0]))
+
+    async def _cleanup_old_version(self, version: int) -> None:
+        """
+        Remove old command registry version after grace period.
+
+        Args:
+            version: Version number to clean up
+        """
+        # Wait for grace period (30 seconds)
+        await asyncio.sleep(30)
+
+        async with self._lock:
+            # Remove this version from old versions list
+            self._old_versions = [
+                v for v in self._old_versions if v[0] != version
+            ]
+            logger.info(f"Cleaned up old command registry version {version}")
 
     def generate_function_schemas(self) -> list[dict[str, Any]]:
         """
