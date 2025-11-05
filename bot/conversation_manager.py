@@ -128,8 +128,8 @@ class ConversationManager:
         self,
         max_concurrent: int = 10,
         max_per_user: int = 3,
-        idle_timeout_seconds: int = 300,  # 5 minutes
-        max_duration_seconds: int = 600   # 10 minutes
+        idle_timeout_seconds: int = 800,
+        max_duration_seconds: int = 1600
     ):
         """Initialize conversation manager.
 
@@ -236,7 +236,8 @@ class ConversationManager:
         async with self._lock:
             context = self._conversations.get(conversation_id)
             if not context:
-                logger.debug(f"Conversation {conversation_id} not found for ending")
+                logger.debug(
+                    f"Conversation {conversation_id} not found for ending")
                 return False
 
             # Update status
@@ -276,7 +277,8 @@ class ConversationManager:
                 return False
 
             context.update_activity()
-            logger.debug(f"Updated activity for conversation {conversation_id}")
+            logger.debug(
+                f"Updated activity for conversation {conversation_id}")
             return True
 
     async def get_active_conversations(
@@ -295,7 +297,8 @@ class ConversationManager:
             conversations = list(self._conversations.values())
 
             if user_id:
-                conversations = [c for c in conversations if c.user_id == user_id]
+                conversations = [
+                    c for c in conversations if c.user_id == user_id]
 
             return conversations
 
@@ -348,20 +351,23 @@ class ConversationManager:
                                 f"Conversation {conv_id} duration timeout "
                                 f"({context.age_seconds():.1f}s > {self.max_duration_seconds}s)"
                             )
-                            to_end.append((conv_id, ConversationStatus.TIMED_OUT))
+                            to_end.append(
+                                (conv_id, ConversationStatus.TIMED_OUT))
 
                 # End expired conversations (outside lock to avoid blocking)
                 for conv_id, status in to_end:
                     await self.end_conversation(conv_id, status)
 
                 if to_end:
-                    logger.info(f"Cleaned up {len(to_end)} expired conversations")
+                    logger.info(
+                        f"Cleaned up {len(to_end)} expired conversations")
 
         except asyncio.CancelledError:
             logger.info("Conversation cleanup task cancelled")
             raise
         except Exception as e:
-            logger.error(f"Error in conversation cleanup task: {e}", exc_info=True)
+            logger.error(
+                f"Error in conversation cleanup task: {e}", exc_info=True)
 
     def start_cleanup_task(self) -> None:
         """Start the background cleanup task."""

@@ -36,8 +36,9 @@ class MockClient:
 class MockRoom:
     """Mock Matrix room for testing."""
 
-    def __init__(self, room_id="!test:matrix.org"):
+    def __init__(self, room_id="!test:matrix.org", prev_batch="s12345_token"):
         self.room_id = room_id
+        self.prev_batch = prev_batch
 
 
 class MockConfig:
@@ -454,3 +455,47 @@ async def test_generate_ai_reply_api_failure():
                 assert "error" in reply.lower()
                 # Should be called once (no retry logic in new version)
                 assert mock_api.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_thread_context_timeout():
+    """Test that get_thread_context handles timeout gracefully."""
+    import asyncio
+
+    client = MockClient()
+    room = MockRoom()
+    thread_root_id = "$thread_root"
+
+    # Mock room_messages to timeout
+    async def timeout_func(*args, **kwargs):
+        await asyncio.sleep(100)  # Longer than any reasonable timeout
+
+    client.room_messages = AsyncMock(side_effect=timeout_func)
+
+    # Should return empty list on timeout
+    messages = await get_thread_context(client, room, thread_root_id, limit=10)
+    assert messages == []
+
+
+@pytest.mark.asyncio
+async def test_get_thread_context_no_prev_batch():
+    """Test that get_thread_context handles missing prev_batch token."""
+    client = MockClient()
+    room = MockRoom(prev_batch=None)
+    thread_root_id = "$thread_root"
+
+    # Should return empty list when no prev_batch
+    messages = await get_thread_context(client, room, thread_root_id, limit=10)
+    assert messages == []
+
+
+@pytest.mark.asyncio
+async def test_get_thread_context_empty_prev_batch():
+    """Test that get_thread_context handles empty prev_batch token."""
+    client = MockClient()
+    room = MockRoom(prev_batch="")
+    thread_root_id = "$thread_root"
+
+    # Should return empty list when prev_batch is empty string
+    messages = await get_thread_context(client, room, thread_root_id, limit=10)
+    assert messages == []

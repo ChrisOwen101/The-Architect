@@ -58,6 +58,24 @@ class MatrixClientWrapper:
         """
         return getattr(self._client, name)
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Forward attribute writes to wrapped client.
+
+        Special handling for wrapper's own attributes (_client, _lock).
+        All other attributes are forwarded to the underlying client to
+        ensure properties like access_token and user_id are set correctly.
+
+        Args:
+            name: Attribute name
+            value: Attribute value
+        """
+        # These are the wrapper's own attributes
+        if name in ('_client', '_lock'):
+            object.__setattr__(self, name, value)
+        else:
+            # Forward all other attributes to the wrapped client
+            setattr(self._client, name, value)
+
     async def room_send(
         self,
         room_id: str,
@@ -78,15 +96,22 @@ class MatrixClientWrapper:
         Returns:
             RoomSendResponse from matrix-nio
         """
+        logger.debug(f"Acquiring lock for room_send to {room_id}...")
         async with self._lock:
-            logger.debug(f"Sending message to {room_id} (locked)")
-            return await self._client.room_send(
-                room_id,
-                message_type,
-                content,
-                tx_id=tx_id,
-                ignore_unverified_devices=ignore_unverified_devices
-            )
+            logger.debug(f"Lock acquired, sending message to {room_id}")
+            try:
+                result = await self._client.room_send(
+                    room_id,
+                    message_type,
+                    content,
+                    tx_id=tx_id,
+                    ignore_unverified_devices=ignore_unverified_devices
+                )
+                logger.debug(f"Message sent to {room_id}, releasing lock")
+                return result
+            except Exception as e:
+                logger.error(f"Error in room_send to {room_id}: {e}")
+                raise
 
     async def room_messages(
         self,
@@ -95,7 +120,8 @@ class MatrixClientWrapper:
         end: Optional[str] = None,
         direction: str = "b",
         limit: int = 10,
-        message_filter: Optional[dict] = None
+        message_filter: Optional[dict] = None,
+        timeout: int = 30
     ):
         """Get messages from a room (thread-safe).
 
@@ -106,20 +132,37 @@ class MatrixClientWrapper:
             direction: Direction to fetch ("b" for backward, "f" for forward)
             limit: Maximum messages to fetch
             message_filter: Optional filter dict
+            timeout: Timeout in seconds (default: 30)
 
         Returns:
             RoomMessagesResponse from matrix-nio
+
+        Raises:
+            asyncio.TimeoutError: If the operation times out
         """
+        logger.debug(f"Acquiring lock for room_messages from {room_id} (start={start[:20] if start else 'empty'}...)...")
         async with self._lock:
-            logger.debug(f"Fetching messages from {room_id} (locked)")
-            return await self._client.room_messages(
-                room_id,
-                start,
-                end=end,
-                direction=direction,
-                limit=limit,
-                message_filter=message_filter
-            )
+            logger.debug(f"Lock acquired, fetching messages from {room_id} (timeout={timeout}s)")
+            try:
+                result = await asyncio.wait_for(
+                    self._client.room_messages(
+                        room_id,
+                        start,
+                        end=end,
+                        direction=direction,
+                        limit=limit,
+                        message_filter=message_filter
+                    ),
+                    timeout=timeout
+                )
+                logger.debug(f"Messages fetched from {room_id}, releasing lock")
+                return result
+            except asyncio.TimeoutError:
+                logger.error(f"room_messages timed out after {timeout}s for room {room_id}")
+                raise
+            except Exception as e:
+                logger.error(f"Error in room_messages from {room_id}: {e}")
+                raise
 
     async def sync(
         self,
@@ -130,6 +173,11 @@ class MatrixClientWrapper:
     ):
         """Sync with the Matrix server (thread-safe).
 
+        NOTE: sync() does NOT use the lock because it fires callbacks
+        that need to make their own API calls (like room_send). Holding
+        the lock during sync would cause deadlock when callbacks try to
+        acquire the same lock.
+
         Args:
             timeout: Timeout in milliseconds
             sync_filter: Optional sync filter
@@ -139,14 +187,13 @@ class MatrixClientWrapper:
         Returns:
             SyncResponse from matrix-nio
         """
-        async with self._lock:
-            logger.debug("Syncing with server (locked)")
-            return await self._client.sync(
-                timeout=timeout,
-                sync_filter=sync_filter,
-                since=since,
-                full_state=full_state
-            )
+        logger.debug("Syncing with server (no lock - callbacks need access)")
+        return await self._client.sync(
+            timeout=timeout,
+            sync_filter=sync_filter,
+            since=since,
+            full_state=full_state
+        )
 
     async def set_displayname(self, displayname: str):
         """Set the bot's display name (thread-safe).

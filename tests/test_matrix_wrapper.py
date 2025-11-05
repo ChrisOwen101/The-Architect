@@ -26,7 +26,7 @@ def mock_client():
 
 
 @pytest.fixture
-def wrapped_client(mock_client):
+async def wrapped_client(mock_client):
     """Create a MatrixClientWrapper with mock client."""
     return MatrixClientWrapper(mock_client)
 
@@ -132,7 +132,11 @@ async def test_concurrent_room_send_serialized(wrapped_client, mock_client):
 
 @pytest.mark.asyncio
 async def test_lock_prevents_simultaneous_access(wrapped_client, mock_client):
-    """Test that lock prevents simultaneous access to client."""
+    """Test that lock prevents simultaneous access to client for methods that use lock.
+
+    NOTE: sync() does NOT use the lock (to prevent deadlock when callbacks make API calls),
+    so we only test room_send and room_messages which DO use the lock.
+    """
     access_count = [0]  # Use list to allow modification in nested function
 
     async def mock_operation(*args, **kwargs):
@@ -146,12 +150,12 @@ async def test_lock_prevents_simultaneous_access(wrapped_client, mock_client):
         return MagicMock()
 
     mock_client.room_send.side_effect = mock_operation
-    mock_client.sync.side_effect = mock_operation
+    mock_client.room_messages.side_effect = mock_operation
 
-    # Try concurrent operations
+    # Try concurrent operations that SHOULD be serialized
     tasks = [
         wrapped_client.room_send("!room:example.com", "m.room.message", {}),
-        wrapped_client.sync(),
+        wrapped_client.room_messages("!room:example.com", "token123"),
         wrapped_client.room_send("!room:example.com", "m.room.message", {}),
     ]
 
@@ -166,6 +170,25 @@ async def test_attribute_forwarding(wrapped_client, mock_client):
     # Access attributes that aren't explicitly wrapped
     assert wrapped_client.user_id == "@bot:example.com"
     assert wrapped_client.device_id == "DEVICEID"
+
+
+@pytest.mark.asyncio
+async def test_attribute_write_forwarding(wrapped_client, mock_client):
+    """Test that attribute writes are forwarded to underlying client."""
+    # Set attributes on wrapper
+    wrapped_client.access_token = "test_token_123"
+    wrapped_client.user_id = "@newuser:example.com"
+    wrapped_client.device_id = "NEWDEVICE"
+
+    # Verify they were set on the underlying client
+    assert mock_client.access_token == "test_token_123"
+    assert mock_client.user_id == "@newuser:example.com"
+    assert mock_client.device_id == "NEWDEVICE"
+
+    # Verify we can read them back through wrapper
+    assert wrapped_client.access_token == "test_token_123"
+    assert wrapped_client.user_id == "@newuser:example.com"
+    assert wrapped_client.device_id == "NEWDEVICE"
 
 
 @pytest.mark.asyncio

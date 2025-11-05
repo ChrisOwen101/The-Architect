@@ -122,10 +122,20 @@ async def get_thread_context(
         List of RoomMessageText events in chronological order
     """
     try:
+        # Get the prev_batch token from the room timeline
+        # This is the proper way to fetch historical messages
+        start_token = room.prev_batch if hasattr(room, 'prev_batch') and room.prev_batch else ""
+
+        if not start_token:
+            logger.warning(f"No prev_batch token available for room {room.room_id}, cannot fetch thread context")
+            return []
+
+        logger.debug(f"Fetching thread context with token: {start_token[:20]}...")
+
         # Fetch recent room messages
         response = await client.room_messages(
             room_id=room.room_id,
-            start="",
+            start=start_token,
             limit=limit * 2,  # Fetch more to account for filtering
         )
 
@@ -361,13 +371,22 @@ async def generate_ai_reply(
 
         logger.info(f"Generating AI reply for thread {thread_root_id}")
 
-        # Fetch thread context
-        thread_messages = await get_thread_context(
-            client, room, thread_root_id, MAX_CONTEXT_MESSAGES
-        )
+        # Fetch thread context with timeout protection
+        try:
+            thread_messages = await asyncio.wait_for(
+                get_thread_context(client, room, thread_root_id, MAX_CONTEXT_MESSAGES),
+                timeout=45  # 45 seconds total timeout (includes the 30s per API call)
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"Thread context fetch timed out for {thread_root_id}")
+            thread_messages = []
+        except Exception as e:
+            logger.error(f"Error fetching thread context: {e}", exc_info=True)
+            thread_messages = []
 
         if not thread_messages:
             # No thread context, just use current message
+            logger.info("Using current message only (no thread context available)")
             thread_messages = [event]
 
         # Build conversation history

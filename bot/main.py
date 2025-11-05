@@ -9,6 +9,7 @@ from .handlers import on_message, set_config
 from .matrix_wrapper import MatrixClientWrapper
 from .conversation_manager import ConversationManager, set_conversation_manager
 from .rate_limiter import RateLimiter, set_rate_limiter
+from .reminder_scheduler import ReminderScheduler, set_scheduler
 
 logging.basicConfig(level=logging.INFO,
                     format="[%(levelname)s] %(name)s: %(message)s")
@@ -103,6 +104,13 @@ async def run():
     start_cleanup_task()
     logger.info("Started user input handler cleanup task")
 
+    # Initialize and start reminder scheduler
+    reminder_scheduler = ReminderScheduler()
+    reminder_scheduler.set_client(client)
+    set_scheduler(reminder_scheduler)
+    reminder_scheduler.start()
+    logger.info("Started reminder scheduler")
+
     logger.info("Starting sync loop")
 
     while not STOP.is_set():
@@ -126,6 +134,13 @@ async def run():
 
     rate_limiter.stop_refill_task()
     logger.info("Stopped rate limiter refill task")
+
+    # Stop reminder scheduler
+    from .reminder_scheduler import get_scheduler
+    scheduler = get_scheduler()
+    if scheduler:
+        scheduler.stop()
+        logger.info("Stopped reminder scheduler")
 
     # Close OpenAI session
     from .openai_integration import close_openai_session

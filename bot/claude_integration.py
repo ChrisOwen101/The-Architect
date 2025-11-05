@@ -147,7 +147,7 @@ async def generate_command_code(
     test_file = bot_root / "tests" / "commands" / f"test_{command_name}.py"
 
     # Build the prompt for Claude Code CLI
-    prompt = f"""I need you to create a new Matrix bot command. Please create TWO files:
+    prompt = f"""I need you to create a new Matrix bot command. Please create TWO files, and edit other files as required:
 
 1. Command file: bot/commands/{command_name}.py
 2. Test file: tests/commands/test_{command_name}.py
@@ -158,7 +158,6 @@ Description: {command_description}
 **Command file requirements (bot/commands/{command_name}.py):**
 - Create a single async function with type-annotated parameters
 - Return a string response to send back to the user, or None if no response needed
-- Keep responses under 4000 characters
 - Include the @command decorator with type-annotated parameters (NO pattern parameter)
 - Parameters should be defined as tuples: (param_name, type, description, required)
 - Include clear docstring explaining what the command does
@@ -194,6 +193,12 @@ async def {command_name}_handler(matrix_context: Optional[dict] = None) -> Optio
     \"\"\"Your docstring here.\"\"\"
     return "Your response"
 ```
+
+**Affecting other existing code**
+Sometimes, the code in a commmand file will need to change the code in other files to work properly. For example, if the new command needs to use a new utility function, you may need to add an import statement to bot/utils/some_util.py. Another example might be changing the requests to OpenAI to to do something differently. In such cases, please make the necessary changes to other files as part of your solution. 
+
+Document any such changes clearly in the docstring of the command file so that when this command is 
+removed or edited in the future, the maintainer knows what other files need to be updated as well.
 
 **Test file requirements (tests/commands/test_{command_name}.py):**
 - Create async tests using pytest-asyncio
