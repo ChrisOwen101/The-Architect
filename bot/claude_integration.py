@@ -147,7 +147,11 @@ async def generate_command_code(
     test_file = bot_root / "tests" / "commands" / f"test_{command_name}.py"
 
     # Build the prompt for Claude Code CLI
-    prompt = f"""I need you to create a new Matrix bot command. Please create TWO files, and edit other files as required:
+    prompt = f"""I need you to create a new piece of functionality OR adapt an existing one in my Matrix bot.
+
+    If you are modifying an existing command, please only modify the relevant parts of the code.
+    
+    If you are creating, please create TWO files, and edit other files as required:
 
 1. Command file: bot/commands/{command_name}.py
 2. Test file: tests/commands/test_{command_name}.py
